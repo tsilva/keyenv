@@ -12,13 +12,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
       - uses: astral-sh/setup-uv@v7
         with:
-          cache: true
+          enable-cache: true
       - name: Verify tag version
         run: |
           version="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
