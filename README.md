@@ -1,7 +1,7 @@
 <div align="center">
   <img src="logo.png" alt="keyenv" width="320" />
 
-  **🔐 Keep secrets in Keychain. Inject them on command. 🔐**
+  **🔐 Keep env secrets in Keychain. Inject them on demand. 🔐**
 </div>
 
 `keyenv` is a macOS command-line tool for developers who want safer local
