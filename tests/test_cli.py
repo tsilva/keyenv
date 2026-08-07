@@ -25,7 +25,7 @@ class CliTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 cli.main(["--version"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertEqual(output.getvalue(), "keyenv 0.1.0\n")
+        self.assertEqual(output.getvalue(), "keyenv 0.1.1\n")
 
     def test_doctor_prints_names_and_sources_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
