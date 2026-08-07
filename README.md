@@ -1,13 +1,16 @@
-# keyenv
+<div align="center">
+  <img src="logo.png" alt="keyenv" width="320" />
 
-`keyenv` is a macOS command-line tool for developers who want local credentials
-out of plaintext dotenv files. It stores values in the login Keychain and adds
-them only to commands launched explicitly through `keyenv run`.
+  **🔐 Keep secrets in Keychain. Inject them on command. 🔐**
+</div>
 
-Applications keep using their normal environment APIs: Python reads
-`os.environ`, Node.js reads `process.env`, and child processes inherit the
-resolved environment. Credential values are never printed or placed in command
-arguments.
+`keyenv` is a macOS command-line tool for developers who want safer local
+credential storage. It keeps values in the login Keychain and injects them only
+into commands launched explicitly through `keyenv run`, while applications keep
+using their normal environment APIs.
+
+Credential values are never printed or placed in command arguments. Launched
+applications and their child processes inherit the resolved environment.
 
 ## Install
 
@@ -22,7 +25,7 @@ The distribution is named `keyenv-macos`; the installed command is `keyenv`.
 
 ## Configure
 
-Commit a value-free `.keyenv.toml` at the root of each project:
+Add a value-free `.keyenv.toml` to the root of each project:
 
 ```toml
 [keyenv]
@@ -33,29 +36,30 @@ account = "my-project/OPENROUTER_API_KEY"
 required = true
 ```
 
-Environment names must be uppercase shell identifiers. Public browser and
-mobile prefixes such as `NEXT_PUBLIC_`, `VITE_`, and `EXPO_PUBLIC_` cannot be
-declared as secrets. Keychain accounts must be unique within a manifest.
-
-Store each credential through the hidden interactive prompt:
+Store the credential through the hidden interactive prompt, then check its
+source:
 
 ```bash
 keyenv set OPENROUTER_API_KEY
 keyenv doctor
 ```
 
+Commit `.keyenv.toml`, but keep credential values out of it.
+
 ## Commands
+
+Run these from a configured project directory:
 
 ```bash
 keyenv set NAME                 # store and verify one declared credential
 keyenv doctor                   # report credential names and sources only
 keyenv run -- COMMAND [ARGS...] # launch a command with resolved credentials
-keyenv migrate                  # copy legacy entries and retain them by default
-keyenv migrate --delete-legacy  # delete legacy entries after complete verification
+keyenv migrate                  # copy legacy entries and retain the originals
+keyenv migrate --delete-legacy  # delete legacy entries after full verification
 keyenv --version                # print the installed version
 ```
 
-Run applications and development tools through the wrapper:
+For example:
 
 ```bash
 keyenv run -- uv run python app.py
@@ -63,42 +67,32 @@ keyenv run -- uv run jupyter lab
 keyenv run -- pnpm dev
 ```
 
-`keyenv` replaces itself with the requested command, so signals and exit status
-belong directly to the launched process. Exit status `1` means a security or
-operational check failed; invalid command-line usage exits with status `2`.
-
-## Resolution and migration
-
-Credentials resolve in this order:
-
-1. A non-empty value already present in the process environment.
-2. The current macOS Keychain service, `io.github.tsilva.keyenv.v1`.
-3. The legacy service, `dev.tsilva.keyenv.v1`.
-4. Missing, which blocks launch when the manifest marks the value as required.
-
-`keyenv doctor` reports `legacy-keychain` when fallback is active. Run
-`keyenv migrate` to copy and verify declared legacy entries under the current
-service. It leaves legacy entries in place for rollback. Deletion happens only
-when `--delete-legacy` is supplied and every required entry is present with no
-conflicts.
+`keyenv run` replaces itself with the requested command, so the launched process
+owns its signals and exit status. Security or operational failures exit with
+status `1`; invalid command-line usage exits with status `2`.
 
 ## Notes
 
+- Credentials resolve from a non-empty process environment value, the current
+  Keychain service, the legacy Keychain service, and finally missing state, in
+  that order. Existing environment values therefore keep CI and provider-native
+  injection working.
 - The native macOS Keychain backend is required. Configuring another `keyring`
   backend causes operational commands to fail safely.
 - `keyenv run` refuses to launch while a declared credential or
   `VERCEL_OIDC_TOKEN` has a populated assignment in a project dotenv file.
-- Existing process variables take precedence, keeping CI and provider-native
-  injection compatible. `doctor` reports `mismatch` when an inherited value
-  differs from Keychain.
-- For linked Vercel projects, avoid `vercel env pull`, which writes plaintext
-  files. Use `vercel env run -e development -- keyenv run -- COMMAND` when
-  remote development values are required.
-- A launched application and its descendants can read injected values while
-  they run. Arbitrary code already running as the same macOS user is outside
-  this tool's protection boundary.
-- Report suspected vulnerabilities according to [SECURITY.md](SECURITY.md),
-  without including credential values.
+- Secret names must be uppercase shell identifiers. Browser and mobile public
+  prefixes such as `NEXT_PUBLIC_`, `VITE_`, and `EXPO_PUBLIC_` are rejected.
+- Migration copies and verifies legacy entries under
+  `io.github.tsilva.keyenv.v1`. It retains the originals unless
+  `--delete-legacy` is supplied and every required entry is safe.
+- For linked Vercel projects, use
+  `vercel env run -e development -- keyenv run -- COMMAND` instead of
+  `vercel env pull`, which writes plaintext files.
+- A launched application and its descendants can read injected values. Code
+  already running as the same macOS user is outside this protection boundary.
+  Report suspected vulnerabilities through [SECURITY.md](SECURITY.md) without
+  including credential values.
 
 ## Development
 
@@ -113,8 +107,8 @@ uv build
 uv run python scripts/check_artifacts.py
 ```
 
-The integration test uses disposable, synthetic entries in the login Keychain
-and removes them after the test.
+The integration test uses disposable synthetic entries in the login Keychain
+and removes them afterward.
 
 ## Architecture
 
