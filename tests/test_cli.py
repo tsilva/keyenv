@@ -73,6 +73,19 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("requires an interactive terminal", error.getvalue())
 
+    def test_undeclared_name_error_escapes_terminal_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = sample_manifest(Path(temporary))
+            error = io.StringIO()
+            with patch.object(cli, "require_native_keychain"):
+                with patch.object(cli, "_load", return_value=manifest):
+                    with redirect_stderr(error):
+                        code = cli.main(["set", "MISSING-\x1b[31m"])
+
+            self.assertEqual(code, 1)
+            self.assertNotIn("\x1b", error.getvalue())
+            self.assertIn("\\x1b", error.getvalue())
+
     def test_authorize_requires_exact_interactive_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = sample_manifest(Path(temporary))
@@ -186,6 +199,37 @@ class CliTests(unittest.TestCase):
                                             )
                     self.assertEqual(code, 1)
                     self.assertIn(message, error.getvalue())
+
+    def test_run_escapes_terminal_controls_in_command_errors(self) -> None:
+        for control, escaped in (
+            ("\x1b", "\\x1b"),
+            ("\n", "\\n"),
+            ("\r", "\\r"),
+            ("\t", "\\t"),
+        ):
+            with self.subTest(control=repr(control)):
+                with tempfile.TemporaryDirectory() as temporary:
+                    manifest = sample_manifest(Path(temporary))
+                    command = f"missing-{control}marker-tool"
+                    error = io.StringIO()
+                    with patch.object(cli, "require_native_keychain"):
+                        with patch.object(cli, "_load", return_value=manifest):
+                            with patch.object(
+                                cli, "_plaintext_failure", return_value=False
+                            ):
+                                with patch.object(
+                                    cli, "resolve_environment", return_value=({}, {})
+                                ):
+                                    with patch(
+                                        "os.execvpe", side_effect=FileNotFoundError()
+                                    ):
+                                        with redirect_stderr(error):
+                                            code = cli.main(["run", "--", command])
+
+                    message = error.getvalue().removesuffix("\n")
+                    self.assertEqual(code, 1)
+                    self.assertNotIn(control, message)
+                    self.assertIn(escaped, message)
 
     def test_run_requires_child_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

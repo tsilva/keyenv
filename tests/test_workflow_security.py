@@ -16,6 +16,24 @@ def workflow_paths() -> list[Path]:
 
 
 class WorkflowSecurityTests(unittest.TestCase):
+    def test_repository_content_scans_do_not_print_matches(self) -> None:
+        seen = 0
+        quiet_option = re.compile(r"(?:^|\s)(?:--quiet|-[A-Za-z]*q[A-Za-z]*)(?=\s)")
+        for path in workflow_paths():
+            for line_number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                if "git grep" not in line:
+                    continue
+                seen += 1
+                arguments = line.split("git grep", maxsplit=1)[1]
+                self.assertRegex(
+                    arguments,
+                    quiet_option,
+                    f"printing git grep at {path}:{line_number}",
+                )
+        self.assertGreater(seen, 0)
+
     def test_external_actions_are_immutable(self) -> None:
         seen = 0
         for path in workflow_paths():

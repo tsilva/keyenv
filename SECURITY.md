@@ -24,3 +24,10 @@ a project requires an explicit `keyenv authorize --rebind NAME`; replacing a
 project's contents at the same canonical path retains that path's authorization.
 Manifest files may not be symbolic links, and `keyenv run` must start within the
 authorized project root.
+
+Before launch, dotenv filenames are classified case-insensitively and scanned
+throughout the project except in explicit metadata or dependency trees:
+`.git`, `.venv`, `venv`, `node_modules`, and `__pycache__`. Generic output trees
+such as `build`, `dist`, and `.next` are scanned. Directory symlinks and broken
+links in the scanned tree fail closed; dotenv file symlinks are inspected through
+their targets.

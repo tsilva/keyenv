@@ -95,6 +95,10 @@ status `1`; invalid command-line usage exits with status `2`.
   backend causes operational commands to fail safely.
 - `keyenv run` refuses to launch while a declared credential or
   `VERCEL_OIDC_TOKEN` has a populated assignment in a project dotenv file.
+- Dotenv filenames are matched case-insensitively. Scanning covers project output
+  trees such as `.next`, `build`, and `dist`, while excluding only `.git`, Python
+  virtual environments, `node_modules`, and `__pycache__`. Directory symlinks or
+  broken links in the scanned tree cause a safe refusal.
 - Secret names must be uppercase shell identifiers. Built-in browser and mobile
   public prefixes include `NEXT_PUBLIC_`, `NUXT_PUBLIC_`, `VITE_`, `VUE_APP_`,
   `REACT_APP_`, `GATSBY_`, `EXPO_PUBLIC_`, and `PUBLIC_`. Manifest additions are

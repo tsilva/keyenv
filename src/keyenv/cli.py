@@ -10,6 +10,7 @@ from . import __version__
 from .core import (
     KeyenvError,
     Manifest,
+    _safe_text,
     authorize_manifest_account,
     binding_state,
     find_manifest,
@@ -98,7 +99,7 @@ def _set(args: argparse.Namespace) -> int:
         spec = manifest.secrets[args.name]
     except KeyError as exc:
         raise KeyenvError(
-            f"credential is not declared in the manifest: {args.name}"
+            f"credential is not declared in the manifest: {_safe_text(args.name)}"
         ) from exc
     if not sys.stdin.isatty():
         raise KeyenvError("keyenv set requires an interactive terminal")
@@ -114,7 +115,7 @@ def _authorize(args: argparse.Namespace) -> int:
         spec = manifest.secrets[args.name]
     except KeyError as exc:
         raise KeyenvError(
-            f"credential is not declared in the manifest: {args.name}"
+            f"credential is not declared in the manifest: {_safe_text(args.name)}"
         ) from exc
     if not sys.stdin.isatty():
         raise KeyenvError("keyenv authorize requires an interactive terminal")
@@ -170,11 +171,15 @@ def _run(args: argparse.Namespace) -> NoReturn:
     try:
         os.execvpe(child_command[0], child_command, environment)
     except FileNotFoundError as exc:
-        raise KeyenvError(f"command not found: {child_command[0]}") from exc
+        raise KeyenvError(f"command not found: {_safe_text(child_command[0])}") from exc
     except PermissionError as exc:
-        raise KeyenvError(f"command is not executable: {child_command[0]}") from exc
+        raise KeyenvError(
+            f"command is not executable: {_safe_text(child_command[0])}"
+        ) from exc
     except OSError as exc:
-        raise KeyenvError(f"cannot launch command: {child_command[0]}") from exc
+        raise KeyenvError(
+            f"cannot launch command: {_safe_text(child_command[0])}"
+        ) from exc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -190,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             return _migrate(args)
         if args.command_name == "run":
             _run(args)
-        raise KeyenvError(f"unknown command: {args.command_name}")
+        raise KeyenvError(f"unknown command: {_safe_text(str(args.command_name))}")
     except KeyenvError as exc:
         print(f"keyenv: {exc}", file=sys.stderr)
         return 1

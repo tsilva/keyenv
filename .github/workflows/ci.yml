@@ -50,11 +50,11 @@ jobs:
       - run: uv run --locked python scripts/check_artifacts.py
       - name: Scan repository for credential-like content
         run: |
-          if git grep -nE 'AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----' -- . ':!uv.lock'; then
+          if git grep -qE 'AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----' -- . ':!uv.lock'; then
             echo "Potential credential found in repository content."
             exit 1
           fi
-          if git grep -nE '/Users/[A-Za-z0-9._-]+/' -- .; then
+          if git grep -qE '/Users/[A-Za-z0-9._-]+/' -- .; then
             echo "Personal absolute path found in repository content."
             exit 1
           fi

@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import os
 import re
+import stat
 import sys
 import tomllib
 from collections.abc import Callable, Iterable, Mapping
@@ -30,18 +31,12 @@ PUBLIC_PREFIXES = (
     "VUE_APP_",
 )
 RESERVED_PLAINTEXT_NAMES = frozenset({"VERCEL_OIDC_TOKEN"})
-PRUNED_DIRECTORIES = frozenset(
+EXCLUDED_SCAN_DIRECTORIES = frozenset(
     {
         ".git",
-        ".next",
         ".venv",
         "__pycache__",
-        "build",
-        "dist",
-        "galleries",
         "node_modules",
-        "runs",
-        "vendor",
         "venv",
     }
 )
@@ -141,9 +136,9 @@ def load_manifest(path: Path) -> Manifest:
     try:
         document = tomllib.loads(resolved.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise KeyenvError(f"cannot read manifest {resolved}: {exc}") from exc
+        raise KeyenvError(f"cannot read manifest {_safe_text(resolved)}") from exc
     except tomllib.TOMLDecodeError as exc:
-        raise KeyenvError(f"invalid TOML in {resolved}: {exc}") from exc
+        raise KeyenvError(f"invalid TOML in {_safe_text(resolved)}") from exc
 
     if set(document) != {"keyenv", "secrets"}:
         raise KeyenvError("manifest must contain only [keyenv] and [secrets.*] tables")
@@ -186,7 +181,9 @@ def load_manifest(path: Path) -> Manifest:
     for raw_name, raw_spec in raw_secrets.items():
         name = str(raw_name)
         if ENV_NAME_PATTERN.fullmatch(name) is None:
-            raise KeyenvError(f"invalid environment name in manifest: {name}")
+            raise KeyenvError(
+                f"invalid environment name in manifest: {_safe_text(name)}"
+            )
         if name.startswith(effective_public_prefixes):
             raise KeyenvError(
                 f"public environment name cannot be declared secret: {name}"
@@ -425,9 +422,14 @@ def migrate_manifest(
 
 
 def _is_env_file(name: str) -> bool:
-    if ".example" in name:
+    normalized = name.casefold()
+    if ".example" in normalized:
         return False
-    return name == ".env" or name.startswith(".env.") or name.endswith(".env")
+    return (
+        normalized == ".env"
+        or normalized.startswith(".env.")
+        or normalized.endswith(".env")
+    )
 
 
 def _assignment(line: str) -> tuple[str, str] | None:
@@ -455,24 +457,53 @@ def find_plaintext_assignments(manifest: Manifest) -> list[PlaintextAssignment]:
     assignments: list[PlaintextAssignment] = []
     root = manifest.root
 
+    def display_path(path: Path) -> Path:
+        try:
+            return path.relative_to(root)
+        except ValueError:
+            return Path(path.name)
+
     def walk_error(exc: OSError) -> None:
         location = Path(exc.filename) if exc.filename else root
-        try:
-            display = location.relative_to(root)
-        except ValueError:
-            display = Path(location.name)
         raise KeyenvError(
-            f"cannot safely inspect project directory: {_safe_text(display)}"
+            f"cannot safely inspect project directory: "
+            f"{_safe_text(display_path(location))}"
         ) from exc
+
+    def reject_unsafe_link(path: Path) -> None:
+        try:
+            link_status = path.lstat()
+        except OSError as exc:
+            raise KeyenvError(
+                f"cannot safely inspect project path: {_safe_text(display_path(path))}"
+            ) from exc
+        if not stat.S_ISLNK(link_status.st_mode):
+            return
+        try:
+            target_status = path.stat()
+        except OSError as exc:
+            raise KeyenvError(
+                f"cannot safely inspect project symbolic link: "
+                f"{_safe_text(display_path(path))}"
+            ) from exc
+        if stat.S_ISDIR(target_status.st_mode):
+            raise KeyenvError(
+                f"project directory must not be a symbolic link: "
+                f"{_safe_text(display_path(path))}"
+            )
 
     for directory, child_directories, filenames in os.walk(root, onerror=walk_error):
         child_directories[:] = sorted(
-            name for name in child_directories if name not in PRUNED_DIRECTORIES
+            name for name in child_directories if name not in EXCLUDED_SCAN_DIRECTORIES
         )
-        for filename in sorted(filenames):
+        ordered_filenames = sorted(filenames)
+        current_directory = Path(directory)
+        for entry_name in (*child_directories, *ordered_filenames):
+            reject_unsafe_link(current_directory / entry_name)
+        for filename in ordered_filenames:
             if not _is_env_file(filename):
                 continue
-            path = Path(directory) / filename
+            path = current_directory / filename
             try:
                 lines = path.read_text(encoding="utf-8-sig").splitlines()
             except (OSError, UnicodeDecodeError) as exc:

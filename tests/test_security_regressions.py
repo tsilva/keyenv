@@ -247,6 +247,158 @@ class ManifestBoundaryTests(unittest.TestCase):
 
 
 class DotenvRegressionTests(unittest.TestCase):
+    def test_scans_project_output_directories(self) -> None:
+        for directory_name in (
+            ".next",
+            "build",
+            "dist",
+            "galleries",
+            "runs",
+            "vendor",
+        ):
+            with self.subTest(directory=directory_name):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    manifest = core.load_manifest(write_manifest(root))
+                    output_directory = root / directory_name
+                    output_directory.mkdir()
+                    (output_directory / ".env").write_text(
+                        "MY_SECRET=synthetic-value\n", encoding="utf-8"
+                    )
+
+                    issues = core.find_plaintext_assignments(manifest)
+
+                    self.assertEqual(
+                        [(issue.name, issue.path.parent.name) for issue in issues],
+                        [("MY_SECRET", directory_name)],
+                    )
+
+    def test_ignores_documented_metadata_and_dependency_trees(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = core.load_manifest(write_manifest(root))
+            for directory_name in (
+                ".git",
+                ".venv",
+                "__pycache__",
+                "node_modules",
+                "venv",
+            ):
+                directory = root / directory_name
+                directory.mkdir()
+                (directory / ".env").write_text(
+                    "MY_SECRET=synthetic-value\n", encoding="utf-8"
+                )
+
+            self.assertEqual(core.find_plaintext_assignments(manifest), [])
+
+    def test_rejects_directory_symlinks_in_scanned_project_trees(self) -> None:
+        for target_location in ("inside", "outside"):
+            with self.subTest(target=target_location):
+                with tempfile.TemporaryDirectory() as temporary:
+                    base = Path(temporary)
+                    root = base / "project"
+                    root.mkdir()
+                    manifest = core.load_manifest(write_manifest(root))
+                    target = (
+                        root / "linked-config"
+                        if target_location == "inside"
+                        else base / "linked-config"
+                    )
+                    target.mkdir()
+                    (target / ".env").write_text(
+                        "MY_SECRET=synthetic-value\n", encoding="utf-8"
+                    )
+                    (root / "config").symlink_to(target, target_is_directory=True)
+
+                    with self.assertRaisesRegex(KeyenvError, "symbolic link") as raised:
+                        core.find_plaintext_assignments(manifest)
+
+                    self.assertNotIn("synthetic-value", str(raised.exception))
+
+    def test_rejects_cyclic_directory_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = core.load_manifest(write_manifest(root))
+            (root / "cycle").symlink_to(root, target_is_directory=True)
+
+            with self.assertRaisesRegex(KeyenvError, "symbolic link"):
+                core.find_plaintext_assignments(manifest)
+
+    def test_scans_dotenv_file_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "project"
+            root.mkdir()
+            manifest = core.load_manifest(write_manifest(root))
+            target = base / "shared.env"
+            target.write_text("MY_SECRET=synthetic-value\n", encoding="utf-8")
+            (root / ".env").symlink_to(target)
+
+            issues = core.find_plaintext_assignments(manifest)
+
+            self.assertEqual([issue.name for issue in issues], ["MY_SECRET"])
+
+    def test_broken_symlinks_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = core.load_manifest(write_manifest(root))
+            (root / "config").symlink_to(root / "missing", target_is_directory=True)
+
+            with self.assertRaisesRegex(KeyenvError, "cannot safely inspect"):
+                core.find_plaintext_assignments(manifest)
+
+    def test_case_variant_dotenv_names_are_scanned(self) -> None:
+        for filename in (".ENV", ".Env.Local", "service.ENV"):
+            with self.subTest(filename=filename):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    manifest = core.load_manifest(write_manifest(root))
+                    (root / filename).write_text(
+                        "MY_SECRET=synthetic-value\n", encoding="utf-8"
+                    )
+
+                    issues = core.find_plaintext_assignments(manifest)
+
+                    self.assertEqual([issue.name for issue in issues], ["MY_SECRET"])
+
+    def test_manifest_parse_error_escapes_terminal_controls(self) -> None:
+        for control, escaped in (
+            ("\x1b", "\\x1b"),
+            ("\n", "\\n"),
+            ("\r", "\\r"),
+            ("\t", "\\t"),
+        ):
+            with self.subTest(control=repr(control)):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / f"project-{control}marker"
+                    root.mkdir()
+                    path = root / ".keyenv.toml"
+                    path.write_text("not valid TOML = [\n", encoding="utf-8")
+
+                    with self.assertRaises(KeyenvError) as raised:
+                        core.load_manifest(path)
+
+                    message = str(raised.exception)
+                    self.assertNotIn(control, message)
+                    self.assertIn(escaped, message)
+
+    def test_invalid_manifest_name_escapes_terminal_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = write_manifest(
+                root,
+                '[keyenv]\nversion = 1\n[secrets."BAD\\u001bNAME"]\n'
+                'account = "sample/secret"\n',
+            )
+
+            with self.assertRaises(KeyenvError) as raised:
+                core.load_manifest(path)
+
+            message = str(raised.exception)
+            self.assertNotIn("\x1b", message)
+            self.assertIn("\\x1b", message)
+
     def test_bom_and_export_tab_assignments_are_detected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
