@@ -103,7 +103,7 @@ conflicts.
 ## Development
 
 ```bash
-uv sync --locked --all-groups
+uv sync --locked --all-groups --no-config --exclude-newer "7 days"
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy
