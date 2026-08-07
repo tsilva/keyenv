@@ -18,3 +18,9 @@ macOS with Python 3.11 or newer and requires the native macOS Keychain backend.
 explicitly launched process tree. The launched application and its descendants
 can read injected values. Arbitrary code already running as the same macOS user
 is outside this protection boundary.
+
+Each Keychain account is authorized to one canonical project-root path. Moving
+a project requires an explicit `keyenv authorize --rebind NAME`; replacing a
+project's contents at the same canonical path retains that path's authorization.
+Manifest files may not be symbolic links, and `keyenv run` must start within the
+authorized project root.

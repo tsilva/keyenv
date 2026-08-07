@@ -16,12 +16,12 @@ processes.
 ## Commands
 
 ```bash
-uv run python -m unittest discover -s tests -v
-KEYENV_INTEGRATION=1 uv run python -m unittest tests.test_integration_keychain -v
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy
-uv build
-uv run python scripts/check_artifacts.py
-uv run keyenv --help
+uv run --locked python -m unittest discover -s tests -v
+KEYENV_INTEGRATION=1 uv run --locked python -m unittest tests.test_integration_keychain -v
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked mypy
+UV_OFFLINE=1 uv build --no-build-isolation --no-sources
+uv run --locked python scripts/check_artifacts.py
+uv run --locked keyenv --help
 ```

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import getpass
+import hashlib
 import hmac
 import os
 import re
 import sys
 import tomllib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,9 +16,19 @@ from keyring.errors import KeyringError
 
 KEYCHAIN_SERVICE = "io.github.tsilva.keyenv.v1"
 LEGACY_KEYCHAIN_SERVICE = "dev.tsilva.keyenv.v1"
+BINDING_KEYCHAIN_SERVICE = "io.github.tsilva.keyenv.bindings.v1"
 MACOS_KEYRING_MODULE = "keyring.backends.macOS"
 ENV_NAME_PATTERN = re.compile(r"[A-Z][A-Z0-9_]*")
-PUBLIC_PREFIXES = ("EXPO_PUBLIC_", "NEXT_PUBLIC_", "PUBLIC_", "VITE_")
+PUBLIC_PREFIXES = (
+    "EXPO_PUBLIC_",
+    "GATSBY_",
+    "NEXT_PUBLIC_",
+    "NUXT_PUBLIC_",
+    "PUBLIC_",
+    "REACT_APP_",
+    "VITE_",
+    "VUE_APP_",
+)
 RESERVED_PLAINTEXT_NAMES = frozenset({"VERCEL_OIDC_TOKEN"})
 PRUNED_DIRECTORIES = frozenset(
     {
@@ -34,10 +45,9 @@ PRUNED_DIRECTORIES = frozenset(
         "venv",
     }
 )
-PLACEHOLDER_PATTERN = re.compile(
-    r"^(?:changeme|example|replace[-_]|todo|xxx+|your[-_]|<.*>|\$\{.*\})",
-    re.IGNORECASE,
-)
+PLACEHOLDER_PATTERN = re.compile(r"(?:<set-with-keyenv>|\$\{[A-Za-z_][A-Za-z0-9_]*\})")
+BINDING_RECORD_PATTERN = re.compile(r"v1:[0-9a-f]{64}")
+BINDING_HASH_DOMAIN = b"keyenv-project-root-binding-v1\0"
 
 
 class KeyenvError(RuntimeError):
@@ -54,6 +64,7 @@ class SecretSpec:
 class Manifest:
     path: Path
     secrets: Mapping[str, SecretSpec]
+    public_prefixes: tuple[str, ...] = PUBLIC_PREFIXES
 
     @property
     def root(self) -> Path:
@@ -75,6 +86,27 @@ class StoredCredential:
 CredentialLookup = Callable[[str], StoredCredential | None]
 
 
+def _safe_text(value: str | os.PathLike[str]) -> str:
+    return ascii(os.fspath(value))
+
+
+def _resolve_manifest_path(path: Path) -> Path:
+    candidate = path.expanduser()
+    try:
+        if candidate.is_symlink():
+            raise KeyenvError(
+                f"manifest must not be a symbolic link: {_safe_text(candidate)}"
+            )
+        resolved = candidate.resolve()
+        if not resolved.is_file():
+            raise KeyenvError(f"manifest does not exist: {_safe_text(resolved)}")
+    except OSError as exc:
+        raise KeyenvError(
+            f"cannot safely inspect manifest: {_safe_text(candidate)}"
+        ) from exc
+    return resolved
+
+
 def require_native_keychain() -> None:
     """Refuse operational use outside the native macOS Keychain backend."""
     if sys.platform != "darwin":
@@ -89,10 +121,7 @@ def require_native_keychain() -> None:
 
 def find_manifest(start: Path, explicit: Path | None = None) -> Path:
     if explicit is not None:
-        candidate = explicit.expanduser().resolve()
-        if not candidate.is_file():
-            raise KeyenvError(f"manifest does not exist: {candidate}")
-        return candidate
+        return _resolve_manifest_path(explicit)
 
     current = start.expanduser().resolve()
     if current.is_file():
@@ -100,7 +129,7 @@ def find_manifest(start: Path, explicit: Path | None = None) -> Path:
     while True:
         candidate = current / ".keyenv.toml"
         if candidate.is_file():
-            return candidate
+            return _resolve_manifest_path(candidate)
         if (current / ".git").exists() or current.parent == current:
             break
         current = current.parent
@@ -108,7 +137,7 @@ def find_manifest(start: Path, explicit: Path | None = None) -> Path:
 
 
 def load_manifest(path: Path) -> Manifest:
-    resolved = path.expanduser().resolve()
+    resolved = _resolve_manifest_path(path)
     try:
         document = tomllib.loads(resolved.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -120,10 +149,33 @@ def load_manifest(path: Path) -> Manifest:
         raise KeyenvError("manifest must contain only [keyenv] and [secrets.*] tables")
 
     metadata = document.get("keyenv")
-    if not isinstance(metadata, dict) or set(metadata) != {"version"}:
-        raise KeyenvError("[keyenv] must contain only version = 1")
+    if not isinstance(metadata, dict) or not set(metadata).issubset(
+        {"version", "public_prefixes"}
+    ):
+        raise KeyenvError("[keyenv] accepts only version and public_prefixes fields")
     if metadata.get("version") != 1:
         raise KeyenvError("unsupported manifest version; expected version = 1")
+
+    raw_public_prefixes = metadata.get("public_prefixes", [])
+    if not isinstance(raw_public_prefixes, list):
+        raise KeyenvError("[keyenv].public_prefixes must be an array of strings")
+    public_prefixes = list(PUBLIC_PREFIXES)
+    seen_prefixes = set(public_prefixes)
+    for prefix in raw_public_prefixes:
+        if (
+            not isinstance(prefix, str)
+            or ENV_NAME_PATTERN.fullmatch(prefix) is None
+            or not prefix.endswith("_")
+        ):
+            raise KeyenvError(
+                "[keyenv].public_prefixes entries must be uppercase prefixes "
+                "ending in _"
+            )
+        if prefix in seen_prefixes:
+            raise KeyenvError(f"duplicate public environment prefix: {prefix}")
+        seen_prefixes.add(prefix)
+        public_prefixes.append(prefix)
+    effective_public_prefixes = tuple(public_prefixes)
 
     raw_secrets = document.get("secrets")
     if not isinstance(raw_secrets, dict) or not raw_secrets:
@@ -135,7 +187,7 @@ def load_manifest(path: Path) -> Manifest:
         name = str(raw_name)
         if ENV_NAME_PATTERN.fullmatch(name) is None:
             raise KeyenvError(f"invalid environment name in manifest: {name}")
-        if name.startswith(PUBLIC_PREFIXES):
+        if name.startswith(effective_public_prefixes):
             raise KeyenvError(
                 f"public environment name cannot be declared secret: {name}"
             )
@@ -149,11 +201,13 @@ def load_manifest(path: Path) -> Manifest:
         required = raw_spec.get("required", True)
         if (
             not isinstance(account, str)
-            or not account.strip()
-            or "\n" in account
-            or "\x00" in account
+            or not account
+            or account != account.strip()
+            or not account.isprintable()
         ):
-            raise KeyenvError(f"[secrets.{name}].account must be a non-empty line")
+            raise KeyenvError(
+                f"[secrets.{name}].account must be a trimmed printable string"
+            )
         if not isinstance(required, bool):
             raise KeyenvError(f"[secrets.{name}].required must be true or false")
         if account in accounts:
@@ -161,7 +215,11 @@ def load_manifest(path: Path) -> Manifest:
         accounts.add(account)
         secrets[name] = SecretSpec(account=account, required=required)
 
-    return Manifest(path=resolved, secrets=secrets)
+    return Manifest(
+        path=resolved,
+        secrets=secrets,
+        public_prefixes=effective_public_prefixes,
+    )
 
 
 def _read_password(service: str, account: str) -> str | None:
@@ -171,7 +229,7 @@ def _read_password(service: str, account: str) -> str | None:
         raise KeyenvError(f"Keychain read failed for account {account}") from exc
     if not value:
         return None
-    if "\x00" in value or "\n" in value:
+    if service != BINDING_KEYCHAIN_SERVICE and ("\x00" in value or "\n" in value):
         raise KeyenvError(f"invalid credential stored for account {account}")
     return value
 
@@ -190,40 +248,146 @@ def _delete_password(service: str, account: str) -> None:
         raise KeyenvError(f"Keychain delete failed for account {account}") from exc
 
 
-def keychain_lookup(account: str) -> StoredCredential | None:
-    current = _read_password(KEYCHAIN_SERVICE, account)
-    if current is not None:
-        return StoredCredential(current, "keychain")
-    legacy = _read_password(LEGACY_KEYCHAIN_SERVICE, account)
-    if legacy is not None:
-        return StoredCredential(legacy, "legacy-keychain")
-    return None
+def manifest_binding_record(manifest: Manifest) -> str:
+    root = manifest.root.expanduser().resolve()
+    digest = hashlib.sha256(BINDING_HASH_DOMAIN + os.fsencode(root)).hexdigest()
+    return f"v1:{digest}"
 
 
-def keychain_set_interactive(account: str) -> None:
-    first = getpass.getpass("credential: ")
-    second = getpass.getpass("retype credential: ")
-    if first != second:
-        raise KeyenvError("credential entries did not match")
-    if not first or "\x00" in first or "\n" in first:
-        raise KeyenvError("credential must be a non-empty single line")
-    _write_password(KEYCHAIN_SERVICE, account, first)
-    stored = _read_password(KEYCHAIN_SERVICE, account)
-    if stored is None or not hmac.compare_digest(first, stored):
-        raise KeyenvError(f"Keychain verification failed for account {account}")
+def binding_state(manifest: Manifest, account: str) -> str:
+    record = _read_password(BINDING_KEYCHAIN_SERVICE, account)
+    if record is None:
+        return "missing"
+    if BINDING_RECORD_PATTERN.fullmatch(record) is None:
+        return "malformed"
+    if hmac.compare_digest(record, manifest_binding_record(manifest)):
+        return "authorized"
+    return "foreign"
+
+
+def authorize_manifest_account(
+    manifest: Manifest, account: str, *, rebind: bool = False
+) -> str:
+    state = binding_state(manifest, account)
+    if state == "authorized":
+        return "authorized"
+    if state in {"foreign", "malformed"} and not rebind:
+        raise KeyenvError(
+            f"Keychain account {_safe_text(account)} is authorized to another "
+            "project or has an invalid authorization; use --rebind to transfer it"
+        )
+
+    expected = manifest_binding_record(manifest)
+    _write_password(BINDING_KEYCHAIN_SERVICE, account, expected)
+    verified = _read_password(BINDING_KEYCHAIN_SERVICE, account)
+    if verified is None or not hmac.compare_digest(expected, verified):
+        raise KeyenvError(
+            f"Keychain authorization verification failed for account "
+            f"{_safe_text(account)}"
+        )
+    return "rebound" if state in {"foreign", "malformed"} else "authorized"
+
+
+@dataclass(frozen=True)
+class _AuthorizedKeychain:
+    accounts: frozenset[str]
+
+    def _require_account(self, account: str) -> None:
+        if account not in self.accounts:
+            raise KeyenvError(
+                f"Keychain account is outside the authorized operation: "
+                f"{_safe_text(account)}"
+            )
+
+    @staticmethod
+    def _require_credential_service(service: str) -> None:
+        if service not in {KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE}:
+            raise KeyenvError("Keychain service is outside the credential boundary")
+
+    def read(self, service: str, account: str) -> str | None:
+        self._require_account(account)
+        self._require_credential_service(service)
+        return _read_password(service, account)
+
+    def write(self, service: str, account: str, value: str) -> None:
+        self._require_account(account)
+        self._require_credential_service(service)
+        _write_password(service, account, value)
+
+    def delete(self, service: str, account: str) -> None:
+        self._require_account(account)
+        self._require_credential_service(service)
+        _delete_password(service, account)
+
+    def lookup(self, account: str) -> StoredCredential | None:
+        current = self.read(KEYCHAIN_SERVICE, account)
+        if current is not None:
+            return StoredCredential(current, "keychain")
+        legacy = self.read(LEGACY_KEYCHAIN_SERVICE, account)
+        if legacy is not None:
+            return StoredCredential(legacy, "legacy-keychain")
+        return None
+
+    def set_interactive(self, account: str) -> None:
+        self._require_account(account)
+        first = getpass.getpass("credential: ")
+        second = getpass.getpass("retype credential: ")
+        if first != second:
+            raise KeyenvError("credential entries did not match")
+        if not first or "\x00" in first or "\n" in first:
+            raise KeyenvError("credential must be a non-empty single line")
+        self.write(KEYCHAIN_SERVICE, account, first)
+        stored = self.read(KEYCHAIN_SERVICE, account)
+        if stored is None or not hmac.compare_digest(first, stored):
+            raise KeyenvError(f"Keychain verification failed for account {account}")
+
+
+def _authorized_keychain(
+    manifest: Manifest, accounts: Iterable[str]
+) -> _AuthorizedKeychain:
+    authorized_accounts = frozenset(accounts)
+    for account in authorized_accounts:
+        state = binding_state(manifest, account)
+        if state == "missing":
+            raise KeyenvError(
+                f"Keychain account {_safe_text(account)} is not authorized for this "
+                "project; run keyenv authorize NAME"
+            )
+        if state == "malformed":
+            raise KeyenvError(
+                f"Keychain authorization is invalid for account "
+                f"{_safe_text(account)}; run keyenv authorize --rebind NAME"
+            )
+        if state == "foreign":
+            raise KeyenvError(
+                f"Keychain account {_safe_text(account)} is authorized to another "
+                "project; run keyenv authorize --rebind NAME to transfer it"
+            )
+    return _AuthorizedKeychain(authorized_accounts)
+
+
+def keychain_lookup(manifest: Manifest, account: str) -> StoredCredential | None:
+    return _authorized_keychain(manifest, [account]).lookup(account)
+
+
+def keychain_set_interactive(manifest: Manifest, account: str) -> None:
+    _authorized_keychain(manifest, [account]).set_interactive(account)
 
 
 def migrate_manifest(
     manifest: Manifest, *, delete_legacy: bool = False
 ) -> tuple[dict[str, str], bool]:
     """Copy declared credentials to the current service and optionally clean up."""
+    keychain = _authorized_keychain(
+        manifest, (spec.account for spec in manifest.secrets.values())
+    )
     statuses: dict[str, str] = {}
     deletable: list[tuple[str, str]] = []
     healthy = True
 
     for name, spec in manifest.secrets.items():
-        current = _read_password(KEYCHAIN_SERVICE, spec.account)
-        legacy = _read_password(LEGACY_KEYCHAIN_SERVICE, spec.account)
+        current = keychain.read(KEYCHAIN_SERVICE, spec.account)
+        legacy = keychain.read(LEGACY_KEYCHAIN_SERVICE, spec.account)
 
         if current is not None and legacy is not None:
             if hmac.compare_digest(current, legacy):
@@ -243,8 +407,8 @@ def migrate_manifest(
             healthy = healthy and not spec.required
             continue
 
-        _write_password(KEYCHAIN_SERVICE, spec.account, legacy)
-        verified = _read_password(KEYCHAIN_SERVICE, spec.account)
+        keychain.write(KEYCHAIN_SERVICE, spec.account, legacy)
+        verified = keychain.read(KEYCHAIN_SERVICE, spec.account)
         if verified is None or not hmac.compare_digest(verified, legacy):
             raise KeyenvError(
                 f"Keychain verification failed for account {spec.account}"
@@ -254,7 +418,7 @@ def migrate_manifest(
 
     if delete_legacy and healthy:
         for name, account in deletable:
-            _delete_password(LEGACY_KEYCHAIN_SERVICE, account)
+            keychain.delete(LEGACY_KEYCHAIN_SERVICE, account)
             statuses[name] = "deleted-legacy"
 
     return statuses, healthy
@@ -270,8 +434,9 @@ def _assignment(line: str) -> tuple[str, str] | None:
     candidate = line.strip()
     if not candidate or candidate.startswith("#"):
         return None
-    if candidate.startswith("export "):
-        candidate = candidate[7:].lstrip()
+    export_match = re.match(r"export[ \t]+", candidate)
+    if export_match is not None:
+        candidate = candidate[export_match.end() :]
     match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", candidate)
     if match is None:
         return None
@@ -282,24 +447,39 @@ def _assignment(line: str) -> tuple[str, str] | None:
 
 
 def _is_populated(value: str) -> bool:
-    return bool(value) and PLACEHOLDER_PATTERN.match(value) is None
+    return bool(value) and PLACEHOLDER_PATTERN.fullmatch(value) is None
 
 
 def find_plaintext_assignments(manifest: Manifest) -> list[PlaintextAssignment]:
     forbidden = set(manifest.secrets) | set(RESERVED_PLAINTEXT_NAMES)
     assignments: list[PlaintextAssignment] = []
-    for directory, child_directories, filenames in os.walk(manifest.root):
-        child_directories[:] = [
+    root = manifest.root
+
+    def walk_error(exc: OSError) -> None:
+        location = Path(exc.filename) if exc.filename else root
+        try:
+            display = location.relative_to(root)
+        except ValueError:
+            display = Path(location.name)
+        raise KeyenvError(
+            f"cannot safely inspect project directory: {_safe_text(display)}"
+        ) from exc
+
+    for directory, child_directories, filenames in os.walk(root, onerror=walk_error):
+        child_directories[:] = sorted(
             name for name in child_directories if name not in PRUNED_DIRECTORIES
-        ]
-        for filename in filenames:
+        )
+        for filename in sorted(filenames):
             if not _is_env_file(filename):
                 continue
             path = Path(directory) / filename
             try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except (OSError, UnicodeDecodeError):
-                continue
+                lines = path.read_text(encoding="utf-8-sig").splitlines()
+            except (OSError, UnicodeDecodeError) as exc:
+                relative = path.relative_to(root)
+                raise KeyenvError(
+                    f"cannot safely inspect dotenv file: {_safe_text(relative)}"
+                ) from exc
             for line in lines:
                 parsed = _assignment(line)
                 if parsed is None:
@@ -313,9 +493,19 @@ def find_plaintext_assignments(manifest: Manifest) -> list[PlaintextAssignment]:
 def resolve_environment(
     manifest: Manifest,
     environment: Mapping[str, str] | None = None,
-    lookup: CredentialLookup = keychain_lookup,
+    lookup: CredentialLookup | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     result = dict(os.environ if environment is None else environment)
+    credential_lookup: CredentialLookup
+    if lookup is None:
+        unresolved_accounts = [
+            spec.account
+            for name, spec in manifest.secrets.items()
+            if not result.get(name)
+        ]
+        credential_lookup = _authorized_keychain(manifest, unresolved_accounts).lookup
+    else:
+        credential_lookup = lookup
     sources: dict[str, str] = {}
     missing: list[str] = []
     for name, spec in manifest.secrets.items():
@@ -323,7 +513,7 @@ def resolve_environment(
         if existing:
             sources[name] = "process"
             continue
-        credential = lookup(spec.account)
+        credential = credential_lookup(spec.account)
         if credential is not None:
             result[name] = credential.value
             sources[name] = credential.source
@@ -340,14 +530,21 @@ def resolve_environment(
 def inspect_sources(
     manifest: Manifest,
     environment: Mapping[str, str] | None = None,
-    lookup: CredentialLookup = keychain_lookup,
+    lookup: CredentialLookup | None = None,
 ) -> tuple[dict[str, str], bool]:
     values = os.environ if environment is None else environment
+    credential_lookup: CredentialLookup
+    if lookup is None:
+        credential_lookup = _authorized_keychain(
+            manifest, (spec.account for spec in manifest.secrets.values())
+        ).lookup
+    else:
+        credential_lookup = lookup
     statuses: dict[str, str] = {}
     healthy = True
     for name, spec in manifest.secrets.items():
         process_value = values.get(name) or None
-        credential = lookup(spec.account)
+        credential = credential_lookup(spec.account)
         if process_value is not None and credential is not None:
             matches = hmac.compare_digest(process_value, credential.value)
             statuses[name] = "matching" if matches else "mismatch"

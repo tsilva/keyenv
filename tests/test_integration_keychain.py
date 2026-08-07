@@ -24,6 +24,7 @@ class NativeKeychainIntegrationTests(unittest.TestCase):
         suffix = uuid.uuid4().hex
         current_service = f"io.github.tsilva.keyenv.test.current.{suffix}"
         legacy_service = f"io.github.tsilva.keyenv.test.legacy.{suffix}"
+        binding_service = f"io.github.tsilva.keyenv.test.binding.{suffix}"
         account = f"integration/{suffix}"
         value = "non-secret-integration-value"
 
@@ -34,26 +35,38 @@ class NativeKeychainIntegrationTests(unittest.TestCase):
             )
             try:
                 keyring.set_password(legacy_service, account, value)
+                keyring.set_password(
+                    binding_service, account, core.manifest_binding_record(manifest)
+                )
                 with patch.object(core, "KEYCHAIN_SERVICE", current_service):
                     with patch.object(core, "LEGACY_KEYCHAIN_SERVICE", legacy_service):
-                        statuses, healthy = core.migrate_manifest(manifest)
-                        self.assertTrue(healthy)
-                        self.assertEqual(statuses, {"TEST_VALUE": "copied"})
-                        self.assertEqual(
-                            keyring.get_password(current_service, account), value
-                        )
-                        self.assertEqual(
-                            keyring.get_password(legacy_service, account), value
-                        )
+                        with patch.object(
+                            core, "BINDING_KEYCHAIN_SERVICE", binding_service
+                        ):
+                            statuses, healthy = core.migrate_manifest(manifest)
+                            self.assertTrue(healthy)
+                            self.assertEqual(statuses, {"TEST_VALUE": "copied"})
+                            self.assertEqual(
+                                keyring.get_password(current_service, account), value
+                            )
+                            self.assertEqual(
+                                keyring.get_password(legacy_service, account), value
+                            )
 
-                        statuses, healthy = core.migrate_manifest(
-                            manifest, delete_legacy=True
-                        )
-                        self.assertTrue(healthy)
-                        self.assertEqual(statuses, {"TEST_VALUE": "deleted-legacy"})
-                        self.assertIsNone(keyring.get_password(legacy_service, account))
+                            statuses, healthy = core.migrate_manifest(
+                                manifest, delete_legacy=True
+                            )
+                            self.assertTrue(healthy)
+                            self.assertEqual(statuses, {"TEST_VALUE": "deleted-legacy"})
+                            self.assertIsNone(
+                                keyring.get_password(legacy_service, account)
+                            )
+                            self.assertEqual(
+                                keyring.get_password(binding_service, account),
+                                core.manifest_binding_record(manifest),
+                            )
             finally:
-                for service in (current_service, legacy_service):
+                for service in (current_service, legacy_service, binding_service):
                     try:
                         keyring.delete_password(service, account)
                     except KeyringError:

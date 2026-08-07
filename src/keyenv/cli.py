@@ -10,6 +10,8 @@ from . import __version__
 from .core import (
     KeyenvError,
     Manifest,
+    authorize_manifest_account,
+    binding_state,
     find_manifest,
     find_plaintext_assignments,
     inspect_sources,
@@ -33,6 +35,17 @@ def _parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="check manifest credential sources")
     doctor.add_argument("--manifest", type=Path)
+
+    authorize = subparsers.add_parser(
+        "authorize", help="bind one manifest account to this project root"
+    )
+    authorize.add_argument("--manifest", type=Path)
+    authorize.add_argument(
+        "--rebind",
+        action="store_true",
+        help="transfer an account already bound to another project root",
+    )
+    authorize.add_argument("name")
 
     set_command = subparsers.add_parser("set", help="set one manifest credential")
     set_command.add_argument("--manifest", type=Path)
@@ -64,7 +77,7 @@ def _plaintext_failure(manifest: Manifest) -> bool:
     assignments = find_plaintext_assignments(manifest)
     for assignment in assignments:
         relative = assignment.path.relative_to(manifest.root)
-        print(f"plaintext\t{assignment.name}\t{relative}")
+        print(f"plaintext\t{assignment.name}\t{os.fspath(relative)!a}")
     return bool(assignments)
 
 
@@ -89,8 +102,44 @@ def _set(args: argparse.Namespace) -> int:
         ) from exc
     if not sys.stdin.isatty():
         raise KeyenvError("keyenv set requires an interactive terminal")
-    keychain_set_interactive(spec.account)
+    keychain_set_interactive(manifest, spec.account)
     print(f"stored\t{args.name}")
+    return 0
+
+
+def _authorize(args: argparse.Namespace) -> int:
+    require_native_keychain()
+    manifest = _load(args.manifest)
+    try:
+        spec = manifest.secrets[args.name]
+    except KeyError as exc:
+        raise KeyenvError(
+            f"credential is not declared in the manifest: {args.name}"
+        ) from exc
+    if not sys.stdin.isatty():
+        raise KeyenvError("keyenv authorize requires an interactive terminal")
+
+    state = binding_state(manifest, spec.account)
+    if state in {"foreign", "malformed"} and not args.rebind:
+        raise KeyenvError(
+            f"Keychain account {spec.account!a} belongs to another project "
+            "or has invalid authorization; rerun with --rebind"
+        )
+
+    print(f"name\t{args.name}")
+    print(f"account\t{spec.account!a}")
+    print(f"project-root\t{os.fspath(manifest.root)!a}")
+    print(
+        "action\trebind" if state in {"foreign", "malformed"} else "action\tauthorize"
+    )
+    confirmation = input(f"type {args.name} to confirm: ")
+    if confirmation != args.name:
+        raise KeyenvError("authorization confirmation did not match")
+
+    status = authorize_manifest_account(
+        manifest, spec.account, rebind=bool(args.rebind)
+    )
+    print(f"{status}\t{args.name}")
     return 0
 
 
@@ -108,6 +157,8 @@ def _migrate(args: argparse.Namespace) -> int:
 def _run(args: argparse.Namespace) -> NoReturn:
     require_native_keychain()
     manifest = _load(args.manifest)
+    if not Path.cwd().resolve().is_relative_to(manifest.root):
+        raise KeyenvError("keyenv run must be started inside the manifest project root")
     if _plaintext_failure(manifest):
         raise KeyenvError("refusing to launch with plaintext credential assignments")
     child_command = list(args.child_command)
@@ -131,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command_name == "doctor":
             return _doctor(args)
+        if args.command_name == "authorize":
+            return _authorize(args)
         if args.command_name == "set":
             return _set(args)
         if args.command_name == "migrate":

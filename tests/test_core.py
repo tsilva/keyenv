@@ -12,6 +12,7 @@ from keyring.errors import KeyringError
 
 import keyenv.core as core
 from keyenv.core import (
+    BINDING_KEYCHAIN_SERVICE,
     KEYCHAIN_SERVICE,
     LEGACY_KEYCHAIN_SERVICE,
     KeyenvError,
@@ -23,6 +24,7 @@ from keyenv.core import (
     keychain_lookup,
     keychain_set_interactive,
     load_manifest,
+    manifest_binding_record,
     migrate_manifest,
     require_native_keychain,
     resolve_environment,
@@ -222,23 +224,28 @@ class ResolutionTests(unittest.TestCase):
 
 class KeychainTests(unittest.TestCase):
     def test_lookup_prefers_current_then_falls_back_to_legacy(self) -> None:
-        values = {
-            (KEYCHAIN_SERVICE, "current"): "new-value",
-            (LEGACY_KEYCHAIN_SERVICE, "current"): "old-value",
-            (LEGACY_KEYCHAIN_SERVICE, "legacy"): "old-value",
-        }
-        with patch.object(
-            core,
-            "_read_password",
-            side_effect=lambda service, account: values.get((service, account)),
-        ):
-            self.assertEqual(
-                keychain_lookup("current"), StoredCredential("new-value", "keychain")
-            )
-            self.assertEqual(
-                keychain_lookup("legacy"),
-                StoredCredential("old-value", "legacy-keychain"),
-            )
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = load_manifest(write_manifest(Path(temporary)))
+            values = {
+                (KEYCHAIN_SERVICE, "current"): "new-value",
+                (LEGACY_KEYCHAIN_SERVICE, "current"): "old-value",
+                (LEGACY_KEYCHAIN_SERVICE, "legacy"): "old-value",
+            }
+
+            def read(service: str, account: str) -> str | None:
+                if service == BINDING_KEYCHAIN_SERVICE:
+                    return manifest_binding_record(manifest)
+                return values.get((service, account))
+
+            with patch.object(core, "_read_password", side_effect=read):
+                self.assertEqual(
+                    keychain_lookup(manifest, "current"),
+                    StoredCredential("new-value", "keychain"),
+                )
+                self.assertEqual(
+                    keychain_lookup(manifest, "legacy"),
+                    StoredCredential("old-value", "legacy-keychain"),
+                )
 
     def test_read_failure_is_not_reported_as_missing(self) -> None:
         with patch.object(
@@ -257,22 +264,32 @@ class KeychainTests(unittest.TestCase):
         write_password: MagicMock,
         read_password: MagicMock,
     ) -> None:
-        keychain_set_interactive("sample/OPENROUTER_API_KEY")
-        self.assertEqual(getpass.call_count, 2)
-        write_password.assert_called_once_with(
-            KEYCHAIN_SERVICE, "sample/OPENROUTER_API_KEY", "long-value"
-        )
-        read_password.assert_called_once_with(
-            KEYCHAIN_SERVICE, "sample/OPENROUTER_API_KEY"
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = load_manifest(write_manifest(Path(temporary)))
+            read_password.side_effect = lambda service, _account: (
+                manifest_binding_record(manifest)
+                if service == BINDING_KEYCHAIN_SERVICE
+                else "long-value"
+            )
+            keychain_set_interactive(manifest, "sample/OPENROUTER_API_KEY")
+            self.assertEqual(getpass.call_count, 2)
+            write_password.assert_called_once_with(
+                KEYCHAIN_SERVICE, "sample/OPENROUTER_API_KEY", "long-value"
+            )
+            self.assertEqual(read_password.call_count, 2)
 
     @patch("keyenv.core._write_password")
     @patch("keyenv.core.getpass.getpass", side_effect=["one", "two"])
     def test_interactive_set_rejects_mismatch(
         self, _getpass: MagicMock, write_password: MagicMock
     ) -> None:
-        with self.assertRaisesRegex(KeyenvError, "did not match"):
-            keychain_set_interactive("sample/OPENROUTER_API_KEY")
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = load_manifest(write_manifest(Path(temporary)))
+            with patch.object(
+                core, "_read_password", return_value=manifest_binding_record(manifest)
+            ):
+                with self.assertRaisesRegex(KeyenvError, "did not match"):
+                    keychain_set_interactive(manifest, "sample/OPENROUTER_API_KEY")
         write_password.assert_not_called()
 
 
@@ -299,6 +316,8 @@ class MigrationTests(unittest.TestCase):
             store = {(LEGACY_KEYCHAIN_SERVICE, "sample/MY_SECRET"): "secret-value"}
 
             def read(service: str, account: str) -> str | None:
+                if service == BINDING_KEYCHAIN_SERVICE:
+                    return manifest_binding_record(manifest)
                 return store.get((service, account))
 
             def write(service: str, account: str, value: str) -> None:
@@ -326,7 +345,11 @@ class MigrationTests(unittest.TestCase):
             with patch.object(
                 core,
                 "_read_password",
-                side_effect=lambda service, account: store.get((service, account)),
+                side_effect=lambda service, account: (
+                    manifest_binding_record(manifest)
+                    if service == BINDING_KEYCHAIN_SERVICE
+                    else store.get((service, account))
+                ),
             ):
                 with patch.object(core, "_write_password") as write:
                     with patch.object(core, "_delete_password") as delete:
@@ -349,7 +372,11 @@ class MigrationTests(unittest.TestCase):
             with patch.object(
                 core,
                 "_read_password",
-                side_effect=lambda service, account: store.get((service, account)),
+                side_effect=lambda service, account: (
+                    manifest_binding_record(manifest)
+                    if service == BINDING_KEYCHAIN_SERVICE
+                    else store.get((service, account))
+                ),
             ):
                 with patch.object(core, "_delete_password") as delete:
                     statuses, healthy = migrate_manifest(manifest, delete_legacy=True)
@@ -365,7 +392,15 @@ class MigrationTests(unittest.TestCase):
             with self.subTest(required=required):
                 with tempfile.TemporaryDirectory() as temporary:
                     manifest = self._manifest(Path(temporary), required=required)
-                    with patch.object(core, "_read_password", return_value=None):
+                    with patch.object(
+                        core,
+                        "_read_password",
+                        side_effect=lambda service, _account, current=manifest: (
+                            manifest_binding_record(current)
+                            if service == BINDING_KEYCHAIN_SERVICE
+                            else None
+                        ),
+                    ):
                         statuses, healthy = migrate_manifest(manifest)
                     self.assertEqual(statuses, {"MY_SECRET": "missing"})
                     self.assertEqual(healthy, expected_healthy)
