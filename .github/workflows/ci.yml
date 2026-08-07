@@ -44,10 +44,14 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked ruff format --check .
       - run: uv run --locked mypy
-      - run: uv build --no-build-isolation --no-sources
+      - name: Create isolated distribution directory
+        run: echo "KEYENV_DIST_DIR=$(mktemp -d)" >> "$GITHUB_ENV"
+      - run: uv build --no-build-isolation --no-sources --out-dir "${KEYENV_DIST_DIR}"
         env:
           UV_OFFLINE: "1"
-      - run: uv run --locked python scripts/check_artifacts.py
+      - name: Remove uv build metadata
+        run: rm -- "${KEYENV_DIST_DIR}/.gitignore"
+      - run: uv run --locked python scripts/check_artifacts.py "${KEYENV_DIST_DIR}"
       - name: Scan repository for credential-like content
         run: |
           if git grep -qE 'AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|-----BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY-----' -- . ':!uv.lock'; then

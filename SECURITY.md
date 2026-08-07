@@ -30,4 +30,10 @@ throughout the project except in explicit metadata or dependency trees:
 `.git`, `.venv`, `venv`, `node_modules`, and `__pycache__`. Generic output trees
 such as `build`, `dist`, and `.next` are scanned. Directory symlinks and broken
 links in the scanned tree fail closed; dotenv file symlinks are inspected through
-their targets.
+their targets. Dotenv candidates must resolve to regular files and may not exceed
+1 MiB.
+
+Release distributions are built in an isolated directory. The artifact checker
+requires exactly one regular `keyenv-macos` wheel and one regular source archive,
+rejects every other directory entry, and rechecks both files after workflow
+transport before publishing.

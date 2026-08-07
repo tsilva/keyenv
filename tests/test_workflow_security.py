@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,6 +12,7 @@ WORKFLOW_ROOT = ROOT / ".github" / "workflows"
 ACTION_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 USES_PATTERN = re.compile(r"^\s*-\s+uses:\s*[\"']?([^\"'#\s]+)")
 UV_VERSION = "0.11.13"
+ARTIFACT_CHECKER = ROOT / "scripts" / "check_artifacts.py"
 
 
 def workflow_paths() -> list[Path]:
@@ -16,6 +20,46 @@ def workflow_paths() -> list[Path]:
 
 
 class WorkflowSecurityTests(unittest.TestCase):
+    def test_artifact_checker_rejects_every_extra_dist_entry(self) -> None:
+        for extra_kind in ("regular", "case-variant", "directory", "symlink"):
+            with self.subTest(extra_kind=extra_kind):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    dist = root / "dist"
+                    dist.mkdir()
+                    if extra_kind == "case-variant":
+                        (dist / "KeyEnv_Macos-0.1.0-py3-none-any.whl").write_bytes(b"")
+                    else:
+                        (dist / "keyenv_macos-0.1.0-py3-none-any.whl").write_bytes(b"")
+                    (dist / "keyenv_macos-0.1.0.tar.gz").write_bytes(b"")
+                    if extra_kind == "regular":
+                        (dist / "extra.txt").write_bytes(b"")
+                    elif extra_kind == "directory":
+                        (dist / "extra").mkdir()
+                    elif extra_kind == "symlink":
+                        (dist / "extra").symlink_to(dist / "missing")
+
+                    result = subprocess.run(
+                        [sys.executable, str(ARTIFACT_CHECKER)],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(
+                        result.stderr.strip(), "unexpected distribution artifact set"
+                    )
+
+    def test_release_transports_and_rechecks_only_expected_artifacts(self) -> None:
+        release = (WORKFLOW_ROOT / "release.yml").read_text(encoding="utf-8")
+        self.assertNotRegex(release, r"(?m)^\s+path:\s+dist/\s*$")
+        self.assertIn("keyenv_macos-*.whl", release)
+        self.assertIn("keyenv_macos-*.tar.gz", release)
+        self.assertIn("Verify downloaded distributions", release)
+        self.assertGreaterEqual(release.count("scripts/check_artifacts.py"), 2)
+
     def test_repository_content_scans_do_not_print_matches(self) -> None:
         seen = 0
         quiet_option = re.compile(r"(?:^|\s)(?:--quiet|-[A-Za-z]*q[A-Za-z]*)(?=\s)")
@@ -95,7 +139,8 @@ class WorkflowSecurityTests(unittest.TestCase):
 
     def test_builds_are_offline_and_use_the_locked_environment(self) -> None:
         expected = re.compile(
-            r"- run: uv build --no-build-isolation --no-sources\n"
+            r"- run: uv build --no-build-isolation --no-sources "
+            r'--out-dir "\$\{KEYENV_DIST_DIR\}"\n'
             r"\s+env:\n"
             r'\s+UV_OFFLINE: "1"'
         )
@@ -103,6 +148,9 @@ class WorkflowSecurityTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             if "uv build" in text:
                 self.assertRegex(text, expected, f"unlocked build in {path}")
+                self.assertIn("Create isolated distribution directory", text)
+                self.assertIn('rm -- "${KEYENV_DIST_DIR}/.gitignore"', text)
+                self.assertIn('scripts/check_artifacts.py "${KEYENV_DIST_DIR}"', text)
 
 
 if __name__ == "__main__":

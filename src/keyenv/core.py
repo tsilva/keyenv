@@ -43,6 +43,7 @@ EXCLUDED_SCAN_DIRECTORIES = frozenset(
 PLACEHOLDER_PATTERN = re.compile(r"(?:<set-with-keyenv>|\$\{[A-Za-z_][A-Za-z0-9_]*\})")
 BINDING_RECORD_PATTERN = re.compile(r"v1:[0-9a-f]{64}")
 BINDING_HASH_DOMAIN = b"keyenv-project-root-binding-v1\0"
+MAX_DOTENV_FILE_BYTES = 1_048_576
 
 
 class KeyenvError(RuntimeError):
@@ -492,6 +493,68 @@ def find_plaintext_assignments(manifest: Manifest) -> list[PlaintextAssignment]:
                 f"{_safe_text(display_path(path))}"
             )
 
+    def read_dotenv_lines(path: Path) -> list[str]:
+        safe_path = _safe_text(display_path(path))
+        try:
+            target_status = path.stat()
+        except OSError as exc:
+            raise KeyenvError(
+                f"cannot safely inspect dotenv file: {safe_path}"
+            ) from exc
+        if not stat.S_ISREG(target_status.st_mode):
+            raise KeyenvError(
+                f"dotenv path must resolve to a regular file: {safe_path}"
+            )
+        if target_status.st_size > MAX_DOTENV_FILE_BYTES:
+            raise KeyenvError(f"dotenv file exceeds maximum size: {safe_path}")
+
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_NONBLOCK", 0),
+            )
+            opened_status = os.fstat(descriptor)
+            if not stat.S_ISREG(opened_status.st_mode):
+                raise KeyenvError(
+                    f"dotenv path must resolve to a regular file: {safe_path}"
+                )
+            if opened_status.st_size > MAX_DOTENV_FILE_BYTES:
+                raise KeyenvError(f"dotenv file exceeds maximum size: {safe_path}")
+
+            content = bytearray()
+            while len(content) < MAX_DOTENV_FILE_BYTES + 1:
+                chunk = os.read(
+                    descriptor,
+                    MAX_DOTENV_FILE_BYTES + 1 - len(content),
+                )
+                if not chunk:
+                    break
+                content.extend(chunk)
+        except KeyenvError:
+            raise
+        except OSError as exc:
+            raise KeyenvError(
+                f"cannot safely inspect dotenv file: {safe_path}"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    raise KeyenvError(
+                        f"cannot safely inspect dotenv file: {safe_path}"
+                    ) from exc
+
+        if len(content) > MAX_DOTENV_FILE_BYTES:
+            raise KeyenvError(f"dotenv file exceeds maximum size: {safe_path}")
+        try:
+            return bytes(content).decode("utf-8-sig").splitlines()
+        except UnicodeDecodeError as exc:
+            raise KeyenvError(
+                f"cannot safely inspect dotenv file: {safe_path}"
+            ) from exc
+
     for directory, child_directories, filenames in os.walk(root, onerror=walk_error):
         child_directories[:] = sorted(
             name for name in child_directories if name not in EXCLUDED_SCAN_DIRECTORIES
@@ -504,13 +567,7 @@ def find_plaintext_assignments(manifest: Manifest) -> list[PlaintextAssignment]:
             if not _is_env_file(filename):
                 continue
             path = current_directory / filename
-            try:
-                lines = path.read_text(encoding="utf-8-sig").splitlines()
-            except (OSError, UnicodeDecodeError) as exc:
-                relative = path.relative_to(root)
-                raise KeyenvError(
-                    f"cannot safely inspect dotenv file: {_safe_text(relative)}"
-                ) from exc
+            lines = read_dotenv_lines(path)
             for line in lines:
                 parsed = _assignment(line)
                 if parsed is None:

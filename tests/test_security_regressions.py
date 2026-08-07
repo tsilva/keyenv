@@ -339,6 +339,60 @@ class DotenvRegressionTests(unittest.TestCase):
 
             self.assertEqual([issue.name for issue in issues], ["MY_SECRET"])
 
+    def test_rejects_special_dotenv_files_before_reading(self) -> None:
+        for linked in (False, True):
+            with self.subTest(linked=linked):
+                with tempfile.TemporaryDirectory() as temporary:
+                    base = Path(temporary)
+                    root = base / "project"
+                    root.mkdir()
+                    manifest = core.load_manifest(write_manifest(root))
+                    fifo = base / "dotenv-fifo" if linked else root / ".env"
+                    os.mkfifo(fifo)
+                    if linked:
+                        (root / ".env").symlink_to(fifo)
+
+                    with patch(
+                        "keyenv.core.os.open",
+                        side_effect=AssertionError("special file must not be read"),
+                    ):
+                        with self.assertRaisesRegex(
+                            KeyenvError, "regular file"
+                        ) as raised:
+                            core.find_plaintext_assignments(manifest)
+
+                    self.assertNotIn("dotenv-fifo", str(raised.exception))
+
+    def test_rejects_oversized_dotenv_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = core.load_manifest(write_manifest(root))
+            limit = getattr(core, "MAX_DOTENV_FILE_BYTES", 1024)
+            (root / ".env").write_bytes(b"#" * (limit + 1))
+
+            with self.assertRaisesRegex(KeyenvError, "maximum size"):
+                core.find_plaintext_assignments(manifest)
+
+    def test_bounds_dotenv_reads_if_the_file_grows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = core.load_manifest(write_manifest(root))
+            dotenv = root / ".env"
+            dotenv.write_bytes(b"#")
+            original_read = os.read
+            grew = False
+
+            def read_after_growth(descriptor: int, size: int) -> bytes:
+                nonlocal grew
+                if not grew:
+                    grew = True
+                    dotenv.write_bytes(b"#" * (core.MAX_DOTENV_FILE_BYTES + 1))
+                return original_read(descriptor, size)
+
+            with patch("keyenv.core.os.read", side_effect=read_after_growth):
+                with self.assertRaisesRegex(KeyenvError, "maximum size"):
+                    core.find_plaintext_assignments(manifest)
+
     def test_broken_symlinks_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -423,18 +477,10 @@ class DotenvRegressionTests(unittest.TestCase):
             root = Path(temporary)
             manifest = core.load_manifest(write_manifest(root))
             (root / ".env").write_text("MY_SECRET=private\n", encoding="utf-8")
-            original_read_text = Path.read_text
-
-            def read_text(
-                path: Path,
-                encoding: str | None = None,
-                errors: str | None = None,
-            ) -> str:
-                if path.name == ".env":
-                    raise PermissionError("backend-private-detail")
-                return original_read_text(path, encoding=encoding, errors=errors)
-
-            with patch.object(Path, "read_text", autospec=True, side_effect=read_text):
+            with patch(
+                "keyenv.core.os.read",
+                side_effect=PermissionError("backend-private-detail"),
+            ):
                 with self.assertRaisesRegex(
                     KeyenvError, "cannot safely inspect"
                 ) as raised:

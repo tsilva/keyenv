@@ -98,7 +98,8 @@ status `1`; invalid command-line usage exits with status `2`.
 - Dotenv filenames are matched case-insensitively. Scanning covers project output
   trees such as `.next`, `build`, and `dist`, while excluding only `.git`, Python
   virtual environments, `node_modules`, and `__pycache__`. Directory symlinks or
-  broken links in the scanned tree cause a safe refusal.
+  broken links in the scanned tree cause a safe refusal. Dotenv candidates must
+  resolve to regular files and may not exceed 1 MiB.
 - Secret names must be uppercase shell identifiers. Built-in browser and mobile
   public prefixes include `NEXT_PUBLIC_`, `NUXT_PUBLIC_`, `VITE_`, `VUE_APP_`,
   `REACT_APP_`, `GATSBY_`, `EXPO_PUBLIC_`, and `PUBLIC_`. Manifest additions are
@@ -123,8 +124,10 @@ uv run --locked ruff format --check .
 uv run --locked mypy
 uv run --locked python -m unittest discover -s tests -v
 KEYENV_INTEGRATION=1 uv run --locked python -m unittest discover -s tests -p 'test_integration_keychain.py' -v
-UV_OFFLINE=1 uv build --no-build-isolation --no-sources
-uv run --locked python scripts/check_artifacts.py
+KEYENV_DIST_DIR="$(mktemp -d)"
+UV_OFFLINE=1 uv build --no-build-isolation --no-sources --out-dir "$KEYENV_DIST_DIR"
+rm -- "$KEYENV_DIST_DIR/.gitignore"
+uv run --locked python scripts/check_artifacts.py "$KEYENV_DIST_DIR"
 ```
 
 The integration test uses disposable synthetic entries in the login Keychain

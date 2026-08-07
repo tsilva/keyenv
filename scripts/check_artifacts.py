@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import tarfile
 import zipfile
 from collections.abc import Iterable
@@ -11,6 +12,8 @@ TOKEN_PATTERN = re.compile(
     rb"sk-[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----)"
 )
 PERSONAL_PATH_PATTERN = re.compile(rb"/Users/[A-Za-z0-9._-]+/")
+WHEEL_NAME_PATTERN = re.compile(r"keyenv_macos-.*\.whl")
+SDIST_NAME_PATTERN = re.compile(r"keyenv_macos-.*\.tar\.gz")
 BANNED_CONTENT = (
     b'"excludedProjects"',
     b'"pending-revocation"',
@@ -54,15 +57,31 @@ def sdist_members(path: Path) -> list[tuple[str, bytes]]:
     return members
 
 
-def main() -> int:
-    dist = Path("dist")
-    wheels = sorted(dist.glob("keyenv_macos-*.whl"))
-    sdists = sorted(dist.glob("keyenv_macos-*.tar.gz"))
-    if len(wheels) != 1 or len(sdists) != 1:
-        raise SystemExit("expected exactly one keyenv-macos wheel and source archive")
+def distribution_paths(dist: Path) -> tuple[Path, Path]:
+    try:
+        entries = sorted(dist.iterdir())
+    except OSError as exc:
+        raise SystemExit("cannot inspect distribution directory") from exc
 
-    wheel = wheel_members(wheels[0])
-    sdist = sdist_members(sdists[0])
+    wheels = [path for path in entries if WHEEL_NAME_PATTERN.fullmatch(path.name)]
+    sdists = [path for path in entries if SDIST_NAME_PATTERN.fullmatch(path.name)]
+    expected = set(wheels + sdists)
+    if (
+        len(entries) != 2
+        or len(wheels) != 1
+        or len(sdists) != 1
+        or set(entries) != expected
+        or any(path.is_symlink() or not path.is_file() for path in entries)
+    ):
+        raise SystemExit("unexpected distribution artifact set")
+    return wheels[0], sdists[0]
+
+
+def main(dist: Path = Path("dist")) -> int:
+    wheel_path, sdist_path = distribution_paths(dist)
+
+    wheel = wheel_members(wheel_path)
+    sdist = sdist_members(sdist_path)
     inspect_members(wheel)
     inspect_members(sdist)
 
@@ -94,4 +113,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if len(sys.argv) > 2:
+        raise SystemExit("usage: check_artifacts.py [DIST_DIRECTORY]")
+    distribution_directory = Path(sys.argv[1]) if len(sys.argv) == 2 else Path("dist")
+    raise SystemExit(main(distribution_directory))
