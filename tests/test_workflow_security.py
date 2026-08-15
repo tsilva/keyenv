@@ -139,7 +139,7 @@ class WorkflowSecurityTests(unittest.TestCase):
 
     def test_builds_are_offline_and_use_the_locked_environment(self) -> None:
         expected = re.compile(
-            r"- run: uv build --no-build-isolation --no-sources "
+            r"- run: uv build --config-file uv\.toml --no-build-isolation --no-sources "
             r'--out-dir "\$\{KEYENV_DIST_DIR\}"\n'
             r"\s+env:\n"
             r'\s+UV_OFFLINE: "1"'
@@ -148,6 +148,7 @@ class WorkflowSecurityTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             if "uv build" in text:
                 self.assertRegex(text, expected, f"unlocked build in {path}")
+                self.assertIn("--config-file uv.toml", text)
                 self.assertIn("Create isolated distribution directory", text)
                 self.assertIn('rm -- "${KEYENV_DIST_DIR}/.gitignore"', text)
                 self.assertIn('scripts/check_artifacts.py "${KEYENV_DIST_DIR}"', text)
