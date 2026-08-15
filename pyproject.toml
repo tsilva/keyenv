@@ -46,6 +46,7 @@ build = [
 ]
 dev = [
   "mypy>=1.17,<2",
+  "pip-audit>=2.9,<3",
   "ruff>=0.12,<1",
 ]
 
@@ -62,6 +63,7 @@ include = [
   "/src",
   "/tests",
   "/uv.lock",
+  "/uv.toml",
 ]
 
 [tool.ruff]
@@ -75,11 +77,3 @@ select = ["B", "E", "F", "I", "RUF", "UP"]
 python_version = "3.11"
 strict = true
 files = ["src", "tests", "scripts"]
-
-[tool.uv]
-required-version = "==0.11.13"
-exclude-newer = "7 days"
-constraint-dependencies = [
-  "guardrails-ai!=0.10.1",
-  "mistralai!=2.4.6",
-]
