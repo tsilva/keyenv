@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build Release"
+  short_description: "Build, publish, and verify keyenv releases"
+  default_prompt: "Use $build-release to prepare and publish the next keyenv-macos release, then verify it on PyPI and GitHub."
