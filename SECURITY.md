@@ -25,6 +25,33 @@ project's contents at the same canonical path retains that path's authorization.
 Manifest files may not be symbolic links, and `keyenv run` must start within the
 authorized project root.
 
+CLI operations require a visible terminal summary and one explicit approval
+before any Keychain call, including project-binding reads. Approval applies only
+to the selected accounts and operation's read/write/delete actions and ends with
+that operation. Denial, EOF, interruption, or a noninteractive terminal prevents
+access. Supplying all selected values through the process environment permits
+background launches without Keychain access. The Python APIs themselves are not
+a separate security boundary against arbitrary same-user code.
+
+The summary and per-call messages contain metadata only, are written to stderr,
+and are flushed before native access. They cannot authenticate other macOS
+dialogs. The Keychain caller remains Python; the package does not contain a
+signed native helper and does not broaden Keychain ACLs. Do not treat an unrelated
+prompt as authorized merely because a Keyenv operation is in progress.
+
+Optional launch profiles select declared secret names and the immediate
+executable. Unselected declared names are removed even from inherited environment
+values. Profiles do not restrict undeclared environment variables, scripts,
+arguments, or descendant behavior. The displayed executable path is executed
+directly, avoiding a second PATH lookup after injection. Symlinks are retained
+to preserve virtual-environment behavior; same-user modification of executables
+or their targets is outside the boundary. All declared secrets remain subject
+to the plaintext scan regardless of profile selection.
+
+Default `doctor` does not initialize or access Keychain and cannot establish
+credential availability or authorization. `doctor --verify` explicitly approves
+the reads needed to compare sources and values.
+
 Before launch, dotenv filenames are classified case-insensitively and scanned
 throughout the project except in explicit metadata or dependency trees:
 `.git`, `.venv`, `venv`, `node_modules`, and `__pycache__`. Generic output trees

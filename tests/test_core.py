@@ -28,6 +28,7 @@ from keyenv.core import (
     migrate_manifest,
     require_native_keychain,
     resolve_environment,
+    select_launch_manifest,
 )
 
 
@@ -75,6 +76,54 @@ class PlatformTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
+    def test_loads_profiles_and_selects_only_their_declared_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = write_manifest(
+                Path(temporary),
+                "[keyenv]\nversion = 1\n"
+                '[secrets.FIRST]\naccount = "sample/first"\n'
+                '[secrets.SECOND]\naccount = "sample/second"\n'
+                '[profiles.dev]\nexecutable = "pnpm"\nsecrets = ["FIRST"]\n'
+                '[profiles.empty]\nexecutable = "python"\nsecrets = []\n',
+            )
+            manifest = load_manifest(path)
+            selected = select_launch_manifest(manifest, "dev")
+            self.assertEqual(set(selected.secrets), {"FIRST"})
+            self.assertEqual(selected.root, manifest.root)
+            self.assertEqual(set(manifest.secrets), {"FIRST", "SECOND"})
+            self.assertEqual(select_launch_manifest(manifest, "empty").secrets, {})
+            with self.assertRaisesRegex(KeyenvError, "requires.*profile"):
+                select_launch_manifest(manifest, None)
+
+    def test_rejects_invalid_profile_configuration(self) -> None:
+        declarations = (
+            "profiles = []\n",
+            '[profiles.BAD]\nexecutable = "tool"\nsecrets = ["FIRST"]\n',
+            '[profiles.dev]\nexecutable = "tool"\nsecrets = ["UNKNOWN"]\n',
+            '[profiles.dev]\nexecutable = "tool"\nsecrets = ["FIRST", "FIRST"]\n',
+            '[profiles.dev]\nexecutable = "tool"\nsecrets = [false]\n',
+            '[profiles.dev]\nexecutable = "tool"\nsecrets = [["FIRST"]]\n',
+            '[profiles.dev]\nexecutable = "tool"\nsecrets = "FIRST"\n',
+            '[profiles.dev]\nexecutable = ""\nsecrets = []\n',
+            '[profiles.dev]\nexecutable = " tool "\nsecrets = []\n',
+            '[profiles.dev]\nexecutable = "tool\\u001b"\nsecrets = []\n',
+            '[profiles.dev]\nexecutable = "tool"\n',
+            '[profiles.dev]\nexecutable = "tool"\nsecrets = []\nextra = true\n',
+        )
+        for declaration in declarations:
+            with self.subTest(declaration=declaration):
+                with tempfile.TemporaryDirectory() as temporary:
+                    # Scalar profiles must be at document level rather than in secrets.
+                    body = (
+                        (declaration if declaration.startswith("profiles =") else "")
+                        + "[keyenv]\nversion = 1\n"
+                        + '[secrets.FIRST]\naccount = "sample/first"\n'
+                        + (declaration if declaration.startswith("[profiles") else "")
+                    )
+                    path = write_manifest(Path(temporary), body)
+                    with self.assertRaises(KeyenvError):
+                        load_manifest(path)
+
     def test_finds_nearest_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

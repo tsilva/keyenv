@@ -1,143 +1,121 @@
-<div align="center">
-  <img src="logo.png" alt="keyenv" width="320" />
+<p align="center">
+  <img src="https://raw.githubusercontent.com/tsilva/keyenv/main/logo.png" alt="keyenv" width="320" />
+  <br />
+  <!-- repo-tagline:start -->
+  <strong>🔐 Keep secrets in Keychain, inject on demand 🔐</strong>
+  <!-- repo-tagline:end -->
+</p>
 
-  **🔐 Keep env secrets in Keychain. Inject them on demand. 🔐**
-</div>
+<p align="center">
+  <a href="https://github.com/tsilva/keyenv/actions/workflows/ci.yml"><img src="https://github.com/tsilva/keyenv/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
+  <a href="https://pypi.org/project/keyenv-macos/"><img src="https://badge.fury.io/py/keyenv-macos.svg" alt="PyPI version" /></a>
+  <a href="https://github.com/tsilva/keyenv/blob/main/pyproject.toml"><img src="https://badgen.net/badge/python/3.11%2B/blue" alt="Python 3.11 or newer" /></a>
+  <a href="https://github.com/tsilva/keyenv/blob/main/LICENSE"><img src="https://badgen.net/badge/license/MIT/blue" alt="MIT license" /></a>
+</p>
 
-`keyenv` is a macOS command-line tool for developers who want safer local
-credential storage. It keeps values in the login Keychain and injects them only
-into commands launched explicitly through `keyenv run`, while applications keep
-using their normal environment APIs.
-
-Credential values are never printed or placed in command arguments. Launched
-applications and their child processes inherit the resolved environment.
+`keyenv` is a macOS command-line tool for developers who want to keep development
+credentials out of plaintext dotenv files. Store secrets in the login Keychain,
+then use `keyenv run` to inject them into a command's environment. Before Keychain
+access, it shows the project, operation, and secret names and asks for approval.
 
 ## Install
 
-`keyenv` requires macOS and Python 3.11 or newer.
+Requires macOS, Python 3.11 or newer, and `uv`. Install the current repository
+version, including the approval and profile commands below:
 
 ```bash
-uv tool install keyenv-macos
+git clone https://github.com/tsilva/keyenv.git
+cd keyenv
+uv tool install --force --config-file uv.toml .
 keyenv --help
 ```
 
-The distribution is named `keyenv-macos`; the installed command is `keyenv`.
+Published releases are also available with `uv tool install keyenv-macos`.
+The distribution is named `keyenv-macos`; the command is `keyenv`.
 
 ## Configure
 
-Add a value-free `.keyenv.toml` to the root of each project:
+Create a value-free `.keyenv.toml` in your project's root:
 
 ```toml
 [keyenv]
 version = 1
-# Optional additions to the built-in browser/mobile public-prefix denylist:
-public_prefixes = ["MY_CLIENT_PUBLIC_"]
 
 [secrets.OPENROUTER_API_KEY]
 account = "my-project/OPENROUTER_API_KEY"
 required = true
 ```
 
-Authorize the account for this canonical project root, store the credential
-through the hidden interactive prompt, then check its source:
+From that project, authorize the account, enter its value through the hidden
+prompt, and launch your application:
 
 ```bash
 keyenv authorize OPENROUTER_API_KEY
 keyenv set OPENROUTER_API_KEY
 keyenv doctor
-```
-
-Commit `.keyenv.toml`, but keep credential values out of it.
-Authorization stores only a path digest in Keychain; it never reads the
-credential. If the project moves, transfer each account explicitly with
-`keyenv authorize --rebind NAME`.
-
-## Commands
-
-Run these from a configured project directory:
-
-```bash
-keyenv authorize NAME           # bind one account to this project root
-keyenv authorize --rebind NAME  # transfer an existing binding to this root
-keyenv set NAME                 # store and verify one declared credential
-keyenv doctor                   # report credential names and sources only
-keyenv run -- COMMAND [ARGS...] # launch a command with resolved credentials
-keyenv migrate                  # copy legacy entries and retain the originals
-keyenv migrate --delete-legacy  # delete legacy entries after full verification
-keyenv --version                # print the installed version
-```
-
-For example:
-
-```bash
-keyenv run -- uv run python app.py
-keyenv run -- uv run jupyter lab
 keyenv run -- pnpm dev
 ```
 
-`keyenv run` replaces itself with the requested command, so the launched process
-owns its signals and exit status. Security or operational failures exit with
-status `1`; invalid command-line usage exits with status `2`.
+Commit the manifest, but keep credential values out of it and dotenv files.
+Your application reads the injected values through its normal environment API.
+
+## Approvals
+
+Before a launch reads Keychain, you see the project, executable path, and selected
+secret names. Type `allow` to approve that operation once; `authorize` requires
+the exact secret name. Any other answer cancels before access. Values and command
+arguments are never displayed.
+
+Each Keychain call announces which item it is accessing before a macOS dialog
+can appear. macOS may still identify the requester as Python. Terminal approval
+and the macOS dialog are separate; the summary cannot authenticate another
+application's popup.
+
+`doctor` checks configuration without opening Keychain. Use `doctor --verify` to
+approve reads that check stored credentials and compare their sources.
+
+## Commands
+
+Run these from a configured project:
+
+```bash
+keyenv run -- COMMAND [ARGS...]              # launch with declared secrets
+keyenv run --profile dev -- COMMAND [ARGS...] # use a configured launch profile
+keyenv doctor                               # check config; no Keychain reads
+keyenv doctor --verify                      # approve credential verification
+keyenv authorize NAME                       # bind an account to this project
+keyenv authorize --rebind NAME              # transfer a binding after a move
+keyenv set NAME                             # enter and verify a credential
+keyenv migrate                              # copy legacy entries; keep originals
+keyenv migrate --delete-legacy              # delete verified legacy entries
+keyenv --version                            # show the installed version
+```
 
 ## Notes
 
-- Credentials resolve from a non-empty process environment value, the current
-  Keychain service, the legacy Keychain service, and finally missing state, in
-  that order. Existing environment values therefore keep CI and provider-native
-  injection working.
-- Keychain accounts have one authorized project-root owner. Projects that need
-  the same underlying value should use distinct account names. A `run` command
-  whose declared values all come from the process environment performs no
-  Keychain authorization or credential reads for those values.
-- `keyenv run` must start inside the manifest project root, and manifest files
-  may not be symbolic links.
-- The native macOS Keychain backend is required. Configuring another `keyring`
-  backend causes operational commands to fail safely.
-- `keyenv run` refuses to launch while a declared credential or
-  `VERCEL_OIDC_TOKEN` has a populated assignment in a project dotenv file.
-- Dotenv filenames are matched case-insensitively. Scanning covers project output
-  trees such as `.next`, `build`, and `dist`, while excluding only `.git`, Python
-  virtual environments, `node_modules`, and `__pycache__`. Directory symlinks or
-  broken links in the scanned tree cause a safe refusal. Dotenv candidates must
-  resolve to regular files and may not exceed 1 MiB.
-- Secret names must be uppercase shell identifiers. Built-in browser and mobile
-  public prefixes include `NEXT_PUBLIC_`, `NUXT_PUBLIC_`, `VITE_`, `VUE_APP_`,
-  `REACT_APP_`, `GATSBY_`, `EXPO_PUBLIC_`, and `PUBLIC_`. Manifest additions are
-  additive and cannot remove these defaults.
-- Migration copies and verifies legacy entries under
-  `io.github.tsilva.keyenv.v1`. It retains the originals unless
-  `--delete-legacy` is supplied and every required entry is safe.
-- For linked Vercel projects, use
-  `vercel env run -e development -- keyenv run -- COMMAND` instead of
-  `vercel env pull`, which writes plaintext files.
-- A launched application and its descendants can read injected values. Code
-  already running as the same macOS user is outside this protection boundary.
-  Report suspected vulnerabilities through [SECURITY.md](SECURITY.md) without
-  including credential values.
+- Non-empty process-environment values take precedence over Keychain. CI and
+  background launches work without approval when all selected values are supplied
+  that way. Keychain access requires visible stdin and stderr terminals.
+- Optional launch profiles restrict the executable and selected secrets. Other
+  declared secrets are removed from the inherited environment. See
+  [profiles and access details](https://github.com/tsilva/keyenv/blob/main/docs/usage.md).
+- A Keychain account belongs to one canonical project root. Run inside that root;
+  moving it requires `authorize --rebind`. Use separate accounts across projects.
+- Launches refuse populated dotenv assignments for any declared secret or
+  `VERCEL_OIDC_TOKEN`. Browser/mobile public environment prefixes cannot be secrets.
+- The launched program and its descendants can read injected secrets. Profiles
+  do not sandbox code, and arbitrary code running as the same user is outside the
+  protection boundary. See the [security policy](https://github.com/tsilva/keyenv/blob/main/SECURITY.md).
 
-## Development
-
-```bash
-uv sync --locked --all-groups --config-file uv.toml
-uv run --locked --config-file uv.toml ruff check .
-uv run --locked --config-file uv.toml ruff format --check .
-uv run --locked --config-file uv.toml mypy
-uv run --locked --config-file uv.toml pip-audit
-uv run --locked --config-file uv.toml python -m unittest discover -s tests -v
-KEYENV_INTEGRATION=1 uv run --locked --config-file uv.toml python -m unittest discover -s tests -p 'test_integration_keychain.py' -v
-KEYENV_DIST_DIR="$(mktemp -d)"
-UV_OFFLINE=1 uv build --config-file uv.toml --no-build-isolation --no-sources --out-dir "$KEYENV_DIST_DIR"
-rm -- "$KEYENV_DIST_DIR/.gitignore"
-uv run --locked --config-file uv.toml python scripts/check_artifacts.py "$KEYENV_DIST_DIR"
-```
-
-The integration test uses disposable synthetic entries in the login Keychain
-and removes them afterward.
+For scan rules, provider injection, migration, and exit codes, see the
+[usage guide](https://github.com/tsilva/keyenv/blob/main/docs/usage.md).
+For tests, dependency auditing, and package checks, see
+[development](https://github.com/tsilva/keyenv/blob/main/docs/development.md).
 
 ## Architecture
 
-![keyenv architecture](architecture.png)
+![keyenv storage and launch flow](https://raw.githubusercontent.com/tsilva/keyenv/main/architecture.png)
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/tsilva/keyenv/blob/main/LICENSE)
