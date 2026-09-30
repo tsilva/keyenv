@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import keyenv.cli as cli
+from keyenv import __version__
 from keyenv.core import Manifest, SecretSpec
 
 
@@ -30,7 +31,7 @@ class CliTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 cli.main(["--version"])
         self.assertEqual(raised.exception.code, 0)
-        self.assertEqual(output.getvalue(), "keyenv 0.1.1\n")
+        self.assertEqual(output.getvalue(), f"keyenv {__version__}\n")
 
     def setUp(self) -> None:
         stack = ExitStack()
