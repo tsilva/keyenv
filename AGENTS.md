@@ -16,12 +16,23 @@ processes.
 ## Commands
 
 ```bash
-uv run --locked python -m unittest discover -s tests -v
-KEYENV_INTEGRATION=1 uv run --locked python -m unittest tests.test_integration_keychain -v
-uv run --locked ruff check .
-uv run --locked ruff format --check .
-uv run --locked mypy
-UV_OFFLINE=1 uv build --no-build-isolation --no-sources
-uv run --locked python scripts/check_artifacts.py
-uv run --locked keyenv --help
+uv sync --locked --all-groups --config-file uv.toml
+uv run --locked --config-file uv.toml python -m unittest discover -s tests -v
+KEYENV_INTEGRATION=1 uv run --locked --config-file uv.toml python -m unittest discover -s tests -p 'test_integration_keychain.py' -v
+uv run --locked --config-file uv.toml ruff check .
+uv run --locked --config-file uv.toml ruff format --check .
+uv run --locked --config-file uv.toml mypy
+uv run --locked --config-file uv.toml pip-audit
+uv run --locked --config-file uv.toml keyenv --help
 ```
+
+For isolated offline builds and artifact audits, follow `docs/development.md`.
+
+## Release skill
+
+Use `$build-release` at `.codex/skills/build-release/SKILL.md` for release
+artifacts, local installation, publishing a new `keyenv-macos` version, or
+verifying an existing release. It covers macOS validation, privacy checks,
+version consistency, tag-triggered GitHub Actions publication, and verification
+of the exact PyPI and GitHub artifacts. A build or local installation request
+does not authorize publication. Every authorized push must also use `$push`.
