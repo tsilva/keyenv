@@ -9,7 +9,8 @@ import stat
 import sys
 import tomllib
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import keyring
@@ -44,6 +45,12 @@ PLACEHOLDER_PATTERN = re.compile(r"(?:<set-with-keyenv>|\$\{[A-Za-z_][A-Za-z0-9_
 BINDING_RECORD_PATTERN = re.compile(r"v1:[0-9a-f]{64}")
 BINDING_HASH_DOMAIN = b"keyenv-project-root-binding-v1\0"
 MAX_DOTENV_FILE_BYTES = 1_048_576
+PROFILE_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
+
+# The CLI installs an operation-scoped observer before any Keychain access.
+keychain_observer: ContextVar[Callable[[str, str, str], None] | None] = ContextVar(
+    "keychain_observer", default=None
+)
 
 
 class KeyenvError(RuntimeError):
@@ -57,10 +64,17 @@ class SecretSpec:
 
 
 @dataclass(frozen=True)
+class LaunchProfile:
+    executable: str
+    secrets: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Manifest:
     path: Path
     secrets: Mapping[str, SecretSpec]
     public_prefixes: tuple[str, ...] = PUBLIC_PREFIXES
+    profiles: Mapping[str, LaunchProfile] = field(default_factory=dict)
 
     @property
     def root(self) -> Path:
@@ -141,8 +155,13 @@ def load_manifest(path: Path) -> Manifest:
     except tomllib.TOMLDecodeError as exc:
         raise KeyenvError(f"invalid TOML in {_safe_text(resolved)}") from exc
 
-    if set(document) != {"keyenv", "secrets"}:
-        raise KeyenvError("manifest must contain only [keyenv] and [secrets.*] tables")
+    if not {"keyenv", "secrets"}.issubset(document) or not set(document).issubset(
+        {"keyenv", "secrets", "profiles"}
+    ):
+        raise KeyenvError(
+            "manifest must contain [keyenv] and [secrets.*], "
+            "and may contain only optional [profiles.*] tables"
+        )
 
     metadata = document.get("keyenv")
     if not isinstance(metadata, dict) or not set(metadata).issubset(
@@ -213,14 +232,79 @@ def load_manifest(path: Path) -> Manifest:
         accounts.add(account)
         secrets[name] = SecretSpec(account=account, required=required)
 
+    raw_profiles = document.get("profiles", {})
+    if not isinstance(raw_profiles, dict):
+        raise KeyenvError("profiles must be [profiles.NAME] tables")
+    profiles: dict[str, LaunchProfile] = {}
+    for profile_name, raw_profile in raw_profiles.items():
+        if PROFILE_NAME_PATTERN.fullmatch(profile_name) is None:
+            raise KeyenvError("profile names must be lowercase identifiers")
+        if not isinstance(raw_profile, dict) or set(raw_profile) != {
+            "executable",
+            "secrets",
+        }:
+            raise KeyenvError(
+                f"[profiles.{profile_name}] requires only executable and secrets fields"
+            )
+        executable = raw_profile["executable"]
+        names = raw_profile["secrets"]
+        if (
+            not isinstance(executable, str)
+            or not executable
+            or executable != executable.strip()
+            or not executable.isprintable()
+        ):
+            raise KeyenvError(
+                f"[profiles.{profile_name}].executable must name a program"
+            )
+        if (
+            not isinstance(names, list)
+            or any(not isinstance(name, str) or name not in secrets for name in names)
+            or len(set(names)) != len(names)
+        ):
+            raise KeyenvError(
+                f"[profiles.{profile_name}].secrets must list unique declared names"
+            )
+        profiles[profile_name] = LaunchProfile(executable, tuple(names))
+
     return Manifest(
         path=resolved,
         secrets=secrets,
         public_prefixes=effective_public_prefixes,
+        profiles=profiles,
     )
 
 
+def select_launch_manifest(manifest: Manifest, profile: str | None) -> Manifest:
+    if profile is None:
+        if manifest.profiles:
+            raise KeyenvError("this manifest requires keyenv run --profile NAME")
+        return manifest
+    if profile not in manifest.profiles:
+        raise KeyenvError(f"unknown launch profile: {_safe_text(profile)}")
+    names = manifest.profiles[profile].secrets
+    return replace(manifest, secrets={name: manifest.secrets[name] for name in names})
+
+
+def inspect_configuration(
+    manifest: Manifest, environment: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """Inspect configuration without opening Keychain or claiming entries exist."""
+    values = os.environ if environment is None else environment
+    return {
+        name: "process" if values.get(name) else "keychain-unchecked"
+        for name in manifest.secrets
+    }
+
+
+def _observe_keychain(action: str, service: str, account: str) -> None:
+    observer = keychain_observer.get()
+    if observer is not None:
+        observer(action, service, account)
+
+
 def _read_password(service: str, account: str) -> str | None:
+    _observe_keychain("read", service, account)
     try:
         value = keyring.get_password(service, account)
     except KeyringError as exc:
@@ -233,6 +317,7 @@ def _read_password(service: str, account: str) -> str | None:
 
 
 def _write_password(service: str, account: str, value: str) -> None:
+    _observe_keychain("write", service, account)
     try:
         keyring.set_password(service, account, value)
     except KeyringError as exc:
@@ -240,6 +325,7 @@ def _write_password(service: str, account: str, value: str) -> None:
 
 
 def _delete_password(service: str, account: str) -> None:
+    _observe_keychain("delete", service, account)
     try:
         keyring.delete_password(service, account)
     except KeyringError as exc:

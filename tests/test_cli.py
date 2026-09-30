@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,36 +18,51 @@ def sample_manifest(root: Path) -> Manifest:
     )
 
 
+class TerminalOutput(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 class CliTests(unittest.TestCase):
     def test_version_is_available_without_an_operational_command(self) -> None:
-        output = io.StringIO()
+        output = TerminalOutput()
         with redirect_stdout(output):
             with self.assertRaises(SystemExit) as raised:
                 cli.main(["--version"])
         self.assertEqual(raised.exception.code, 0)
         self.assertEqual(output.getvalue(), "keyenv 0.1.1\n")
 
+    def setUp(self) -> None:
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(
+            patch("keyenv.cli.shutil.which", return_value="/usr/bin/tool")
+        )
+        stack.enter_context(patch("keyenv.cli.sys.stdin.isatty", return_value=True))
+        stack.enter_context(redirect_stderr(TerminalOutput()))
+        stack.enter_context(patch("builtins.input", return_value="allow"))
+
     def test_doctor_prints_names_and_sources_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = sample_manifest(Path(temporary))
-            output = io.StringIO()
+            output = TerminalOutput()
             with patch.object(cli, "require_native_keychain"):
                 with patch.object(cli, "_load", return_value=manifest):
                     with patch.object(cli, "_plaintext_failure", return_value=False):
                         with patch.object(
                             cli,
-                            "inspect_sources",
-                            return_value=({"MY_SECRET": "legacy-keychain"}, True),
+                            "inspect_configuration",
+                            return_value={"MY_SECRET": "keychain-unchecked"},
                         ):
                             with redirect_stdout(output):
                                 code = cli.main(["doctor"])
             self.assertEqual(code, 0)
-            self.assertEqual(output.getvalue(), "legacy-keychain\tMY_SECRET\n")
+            self.assertEqual(output.getvalue(), "keychain-unchecked\tMY_SECRET\n")
 
     def test_migrate_reports_status_and_propagates_health(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = sample_manifest(Path(temporary))
-            output = io.StringIO()
+            output = TerminalOutput()
             with patch.object(cli, "require_native_keychain"):
                 with patch.object(cli, "_load", return_value=manifest):
                     with patch.object(
@@ -64,7 +79,7 @@ class CliTests(unittest.TestCase):
     def test_set_requires_a_tty(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = sample_manifest(Path(temporary))
-            error = io.StringIO()
+            error = TerminalOutput()
             with patch.object(cli, "require_native_keychain"):
                 with patch.object(cli, "_load", return_value=manifest):
                     with patch("keyenv.cli.sys.stdin.isatty", return_value=False):
@@ -76,7 +91,7 @@ class CliTests(unittest.TestCase):
     def test_undeclared_name_error_escapes_terminal_controls(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = sample_manifest(Path(temporary))
-            error = io.StringIO()
+            error = TerminalOutput()
             with patch.object(cli, "require_native_keychain"):
                 with patch.object(cli, "_load", return_value=manifest):
                     with redirect_stderr(error):
@@ -89,21 +104,18 @@ class CliTests(unittest.TestCase):
     def test_authorize_requires_exact_interactive_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = sample_manifest(Path(temporary))
-            output = io.StringIO()
+            output = TerminalOutput()
             with patch.object(cli, "require_native_keychain"):
                 with patch.object(cli, "_load", return_value=manifest):
-                    with patch.object(cli, "binding_state", return_value="missing"):
-                        with patch.object(
-                            cli,
-                            "authorize_manifest_account",
-                            return_value="authorized",
-                        ) as authorize:
-                            with patch(
-                                "keyenv.cli.sys.stdin.isatty", return_value=True
-                            ):
-                                with patch("builtins.input", return_value="MY_SECRET"):
-                                    with redirect_stdout(output):
-                                        code = cli.main(["authorize", "MY_SECRET"])
+                    with patch.object(
+                        cli,
+                        "authorize_manifest_account",
+                        return_value="authorized",
+                    ) as authorize:
+                        with patch("keyenv.cli.sys.stdin.isatty", return_value=True):
+                            with patch("builtins.input", return_value="MY_SECRET"):
+                                with redirect_stdout(output):
+                                    code = cli.main(["authorize", "MY_SECRET"])
             self.assertEqual(code, 0)
             self.assertIn("authorized\tMY_SECRET", output.getvalue())
             self.assertNotIn("credential:", output.getvalue())
@@ -114,20 +126,15 @@ class CliTests(unittest.TestCase):
     def test_authorize_rejects_wrong_confirmation_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = sample_manifest(Path(temporary))
-            error = io.StringIO()
+            error = TerminalOutput()
             with patch.object(cli, "require_native_keychain"):
                 with patch.object(cli, "_load", return_value=manifest):
-                    with patch.object(cli, "binding_state", return_value="missing"):
-                        with patch.object(
-                            cli, "authorize_manifest_account"
-                        ) as authorize:
-                            with patch(
-                                "keyenv.cli.sys.stdin.isatty", return_value=True
-                            ):
-                                with patch("builtins.input", return_value="WRONG"):
-                                    with redirect_stdout(io.StringIO()):
-                                        with redirect_stderr(error):
-                                            code = cli.main(["authorize", "MY_SECRET"])
+                    with patch.object(cli, "authorize_manifest_account") as authorize:
+                        with patch("keyenv.cli.sys.stdin.isatty", return_value=True):
+                            with patch("builtins.input", return_value="WRONG"):
+                                with redirect_stdout(TerminalOutput()):
+                                    with redirect_stderr(error):
+                                        code = cli.main(["authorize", "MY_SECRET"])
             self.assertEqual(code, 1)
             self.assertIn("did not match", error.getvalue())
             authorize.assert_not_called()
@@ -136,8 +143,8 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             manifest = sample_manifest(Path(temporary))
             environment = {"PATH": "/usr/bin", "MY_SECRET": "not-for-output"}
-            output = io.StringIO()
-            error = io.StringIO()
+            output = TerminalOutput()
+            error = TerminalOutput()
             with patch.object(cli, "require_native_keychain"):
                 with patch.object(cli, "_load", return_value=manifest):
                     with patch.object(cli, "_plaintext_failure", return_value=False):
@@ -147,22 +154,24 @@ class CliTests(unittest.TestCase):
                             return_value=(environment, {"MY_SECRET": "keychain"}),
                         ):
                             with patch(
-                                "os.execvpe",
+                                "os.execve",
                                 side_effect=RuntimeError("process replaced"),
-                            ) as execvpe:
+                            ) as execve:
                                 with redirect_stdout(output), redirect_stderr(error):
                                     with self.assertRaisesRegex(
                                         RuntimeError, "process replaced"
                                     ):
                                         cli.main(["run", "--", "tool", "arg"])
-            execvpe.assert_called_once_with("tool", ["tool", "arg"], environment)
+            execve.assert_called_once_with(
+                "/usr/bin/tool", ["tool", "arg"], environment
+            )
             self.assertNotIn("not-for-output", output.getvalue())
             self.assertNotIn("not-for-output", error.getvalue())
 
     def test_run_refuses_plaintext_before_resolving_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = sample_manifest(Path(temporary))
-            error = io.StringIO()
+            error = TerminalOutput()
             with patch.object(cli, "require_native_keychain"):
                 with patch.object(cli, "_load", return_value=manifest):
                     with patch.object(cli, "_plaintext_failure", return_value=True):
@@ -181,7 +190,7 @@ class CliTests(unittest.TestCase):
                 (PermissionError(), "not executable"),
             ):
                 with self.subTest(message=message):
-                    error = io.StringIO()
+                    error = TerminalOutput()
                     with patch.object(cli, "require_native_keychain"):
                         with patch.object(cli, "_load", return_value=manifest):
                             with patch.object(
@@ -192,7 +201,7 @@ class CliTests(unittest.TestCase):
                                     "resolve_environment",
                                     return_value=({}, {}),
                                 ):
-                                    with patch("os.execvpe", side_effect=failure):
+                                    with patch("os.execve", side_effect=failure):
                                         with redirect_stderr(error):
                                             code = cli.main(
                                                 ["run", "--", "missing-tool"]
@@ -211,7 +220,7 @@ class CliTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as temporary:
                     manifest = sample_manifest(Path(temporary))
                     command = f"missing-{control}marker-tool"
-                    error = io.StringIO()
+                    error = TerminalOutput()
                     with patch.object(cli, "require_native_keychain"):
                         with patch.object(cli, "_load", return_value=manifest):
                             with patch.object(
@@ -221,7 +230,7 @@ class CliTests(unittest.TestCase):
                                     cli, "resolve_environment", return_value=({}, {})
                                 ):
                                     with patch(
-                                        "os.execvpe", side_effect=FileNotFoundError()
+                                        "keyenv.cli.shutil.which", return_value=None
                                     ):
                                         with redirect_stderr(error):
                                             code = cli.main(["run", "--", command])
@@ -234,7 +243,7 @@ class CliTests(unittest.TestCase):
     def test_run_requires_child_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manifest = sample_manifest(Path(temporary))
-            error = io.StringIO()
+            error = TerminalOutput()
             with patch.object(cli, "require_native_keychain"):
                 with patch.object(cli, "_load", return_value=manifest):
                     with patch.object(cli, "_plaintext_failure", return_value=False):
@@ -253,7 +262,7 @@ class CliTests(unittest.TestCase):
                     "MY_SECRET": SecretSpec(account="sample/MY_SECRET", required=True)
                 },
             )
-            error = io.StringIO()
+            error = TerminalOutput()
             with patch.object(cli, "require_native_keychain"):
                 with patch.object(cli, "_load", return_value=manifest):
                     with patch.object(cli, "resolve_environment") as resolve:

@@ -2,25 +2,29 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
 
 from . import __version__
+from .access import access_request
 from .core import (
     KeyenvError,
     Manifest,
     _safe_text,
     authorize_manifest_account,
-    binding_state,
     find_manifest,
     find_plaintext_assignments,
+    inspect_configuration,
     inspect_sources,
     keychain_set_interactive,
     load_manifest,
     migrate_manifest,
     require_native_keychain,
     resolve_environment,
+    select_launch_manifest,
 )
 
 
@@ -34,8 +38,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command_name", required=True)
 
-    doctor = subparsers.add_parser("doctor", help="check manifest credential sources")
+    doctor = subparsers.add_parser(
+        "doctor", help="check configuration without reading Keychain"
+    )
     doctor.add_argument("--manifest", type=Path)
+    doctor.add_argument(
+        "--verify", action="store_true", help="approve and verify stored credentials"
+    )
 
     authorize = subparsers.add_parser(
         "authorize", help="bind one manifest account to this project root"
@@ -66,6 +75,9 @@ def _parser() -> argparse.ArgumentParser:
         "run", help="launch a command with resolved credentials"
     )
     run.add_argument("--manifest", type=Path)
+    run.add_argument(
+        "--profile", help="launch with one manifest secret/executable profile"
+    )
     run.add_argument("child_command", nargs=argparse.REMAINDER)
     return parser
 
@@ -83,10 +95,16 @@ def _plaintext_failure(manifest: Manifest) -> bool:
 
 
 def _doctor(args: argparse.Namespace) -> int:
-    require_native_keychain()
     manifest = _load(args.manifest)
     plaintext = _plaintext_failure(manifest)
-    statuses, healthy = inspect_sources(manifest)
+    if args.verify:
+        if plaintext:
+            return 1
+        require_native_keychain()
+        with access_request(manifest, "verify credentials"):
+            statuses, healthy = inspect_sources(manifest)
+    else:
+        statuses, healthy = inspect_configuration(manifest), True
     for name in sorted(statuses):
         print(f"{statuses[name]}\t{name}")
     return 0 if healthy and not plaintext else 1
@@ -103,7 +121,11 @@ def _set(args: argparse.Namespace) -> int:
         ) from exc
     if not sys.stdin.isatty():
         raise KeyenvError("keyenv set requires an interactive terminal")
-    keychain_set_interactive(manifest, spec.account)
+    selected = replace(manifest, secrets={args.name: spec})
+    with access_request(
+        selected, "store and verify credential", actions=frozenset({"read", "write"})
+    ):
+        keychain_set_interactive(manifest, spec.account)
     print(f"stored\t{args.name}")
     return 0
 
@@ -120,26 +142,17 @@ def _authorize(args: argparse.Namespace) -> int:
     if not sys.stdin.isatty():
         raise KeyenvError("keyenv authorize requires an interactive terminal")
 
-    state = binding_state(manifest, spec.account)
-    if state in {"foreign", "malformed"} and not args.rebind:
-        raise KeyenvError(
-            f"Keychain account {spec.account!a} belongs to another project "
-            "or has invalid authorization; rerun with --rebind"
+    selected = replace(manifest, secrets={args.name: spec})
+    operation = "rebind project authorization" if args.rebind else "authorize project"
+    with access_request(
+        selected,
+        operation,
+        confirmation=args.name,
+        actions=frozenset({"read", "write"}),
+    ):
+        status = authorize_manifest_account(
+            manifest, spec.account, rebind=bool(args.rebind)
         )
-
-    print(f"name\t{args.name}")
-    print(f"account\t{spec.account!a}")
-    print(f"project-root\t{os.fspath(manifest.root)!a}")
-    print(
-        "action\trebind" if state in {"foreign", "malformed"} else "action\tauthorize"
-    )
-    confirmation = input(f"type {args.name} to confirm: ")
-    if confirmation != args.name:
-        raise KeyenvError("authorization confirmation did not match")
-
-    status = authorize_manifest_account(
-        manifest, spec.account, rebind=bool(args.rebind)
-    )
     print(f"{status}\t{args.name}")
     return 0
 
@@ -147,9 +160,18 @@ def _authorize(args: argparse.Namespace) -> int:
 def _migrate(args: argparse.Namespace) -> int:
     require_native_keychain()
     manifest = _load(args.manifest)
-    statuses, healthy = migrate_manifest(
-        manifest, delete_legacy=bool(args.delete_legacy)
+    operation = (
+        "migrate and delete verified legacy credentials"
+        if args.delete_legacy
+        else "migrate credentials; retain legacy entries"
     )
+    actions = frozenset(
+        {"read", "write", "delete"} if args.delete_legacy else {"read", "write"}
+    )
+    with access_request(manifest, operation, actions=actions):
+        statuses, healthy = migrate_manifest(
+            manifest, delete_legacy=bool(args.delete_legacy)
+        )
     for name in sorted(statuses):
         print(f"{statuses[name]}\t{name}")
     return 0 if healthy else 1
@@ -167,9 +189,30 @@ def _run(args: argparse.Namespace) -> NoReturn:
         child_command.pop(0)
     if not child_command:
         raise KeyenvError("keyenv run requires a command after --")
-    environment, _ = resolve_environment(manifest)
+    selected = select_launch_manifest(manifest, args.profile)
+    executable = _resolve_executable(child_command[0])
+    if args.profile is not None:
+        expected = _resolve_executable(manifest.profiles[args.profile].executable)
+        if executable != expected:
+            raise KeyenvError("command does not match the selected profile executable")
+    # Drop other declared secrets even when inherited from a parent process.
+    inherited = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in manifest.secrets or name in selected.secrets
+    }
+    with access_request(
+        selected,
+        "launch",
+        executable=executable,
+        profile=args.profile,
+        environment=inherited,
+        needs_keychain=any(not inherited.get(name) for name in selected.secrets),
+    ):
+        environment, _ = resolve_environment(selected, environment=inherited)
     try:
-        os.execvpe(child_command[0], child_command, environment)
+        # Execute the displayed path, so injected PATH cannot change the recipient.
+        os.execve(executable, child_command, environment)
     except FileNotFoundError as exc:
         raise KeyenvError(f"command not found: {_safe_text(child_command[0])}") from exc
     except PermissionError as exc:
@@ -180,6 +223,16 @@ def _run(args: argparse.Namespace) -> NoReturn:
         raise KeyenvError(
             f"cannot launch command: {_safe_text(child_command[0])}"
         ) from exc
+
+
+def _resolve_executable(command: str) -> str:
+    executable = shutil.which(command)
+    if executable is None:
+        if os.path.exists(command):
+            raise KeyenvError(f"command is not executable: {_safe_text(command)}")
+        raise KeyenvError(f"command not found: {_safe_text(command)}")
+    # Preserve symlinks: resolving a venv's Python changes its runtime environment.
+    return os.path.abspath(executable)
 
 
 def main(argv: list[str] | None = None) -> int:
