@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "keyenv-macos"
-version = "0.1.2"
+version = "0.1.3"
 description = "Inject macOS Keychain credentials into explicitly launched processes"
 readme = "README.md"
 license = "MIT"
