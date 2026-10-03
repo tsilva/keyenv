@@ -5,6 +5,16 @@ on:
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
 
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact pushed main commit to validate without publication
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: macos-latest
@@ -15,6 +25,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+      - name: Verify source identity
+        env:
+          REQUESTED: ${{ inputs.ref || github.sha }}
+          EVENT: ${{ github.event_name }}
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$REQUESTED"
+          if [ "$EVENT" = workflow_dispatch ]; then
+            test "$DISPATCH_REF" = refs/heads/main
+            [[ "$REQUESTED" =~ ^[0-9a-f]{40}$ ]]
+            git merge-base --is-ancestor "$REQUESTED" origin/main
+          fi
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
@@ -23,6 +47,7 @@ jobs:
           enable-cache: true
           version: "0.11.13"
       - name: Verify tag version
+        if: github.event_name == 'push'
         run: |
           version="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
           test "${GITHUB_REF_NAME}" = "v${version}"
@@ -53,6 +78,8 @@ jobs:
             echo "Personal absolute path found in repository content."
             exit 1
           fi
+      - name: Hash distributions
+        run: shasum -a 256 "${KEYENV_DIST_DIR}"/*
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: distributions
@@ -62,6 +89,7 @@ jobs:
           if-no-files-found: error
 
   publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -85,6 +113,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
 
   release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [build, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10
