@@ -119,3 +119,5 @@ For tests, dependency auditing, and package checks, see
 ## License
 
 [MIT](https://github.com/tsilva/keyenv/blob/main/LICENSE)
+
+Dependency patch auto-merge requires Dependabot as both the PR author and event sender. Maintainer-prepared updates are validated and merged manually.
