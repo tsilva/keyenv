@@ -1,6 +1,6 @@
 ---
-name: build-release
-description: Build, install locally, publish, monitor, or verify keyenv-macos releases. Use when the user invokes $build-release or /build-release, requests release artifacts or local deployment, asks to cut or tag a release, or asks whether a version reached PyPI.
+name: keyenv_build-release
+description: Build, install locally, publish, monitor, or verify keyenv-macos releases. Use when the user invokes $keyenv_build-release or /keyenv_build-release, requests release artifacts or local deployment, asks to cut or tag a release, or asks whether a version reached PyPI.
 ---
 
 # Build Release
@@ -99,7 +99,7 @@ with the runner log. Require exactly one matching wheel and sdist.
 
 For installation, continue in [references/local-install.md](references/local-install.md)
 using that downloaded, audited wheel. An explicitly requested local source
-build can follow `docs/development.md`; it is never implicit in `$build-release`.
+build can follow `docs/development.md`; it is never implicit in `$keyenv_build-release`.
 
 ## Commit and trigger publication
 

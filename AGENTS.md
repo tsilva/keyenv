@@ -30,9 +30,16 @@ For isolated offline builds and artifact audits, follow `docs/development.md`.
 
 ## Release skill
 
-Use `$build-release` at `.codex/skills/build-release/SKILL.md` for release
+Use `$keyenv_build-release` at `.codex/skills/keyenv_build-release/SKILL.md` for release
 artifacts, local installation, publishing a new `keyenv-macos` version, or
 verifying an existing release. It builds in GitHub Actions and covers macOS validation, privacy checks,
 version consistency, tag-triggered GitHub Actions publication, and verification
 of the exact PyPI and GitHub artifacts. A build or local installation request
 does not authorize publication. Every authorized push must also use `$push`.
+
+## Shared release procedure
+
+The project `keyenv_build-release` skill composes `$release-workflow` from
+`~/.codex/skills/private-skills/release-workflow/SKILL.md`.
+Read both for release work; keep project commands, version policy, artifact
+requirements, and approval gates in the project adapter.
