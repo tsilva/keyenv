@@ -20,6 +20,10 @@ access, it shows the project, operation, and secret names and asks for approval.
 
 ## Install
 
+Dependency resolution keeps the seven-day release-age setting in `uv.toml` and
+the security constraints in `[tool.uv]` in `pyproject.toml`. Keep both files with
+the committed `uv.lock` when updating dependencies.
+
 Requires macOS, Python 3.11 or newer, and `uv`. Install the current repository
 version, including the approval and profile commands below:
 

@@ -78,3 +78,12 @@ select = ["B", "E", "F", "I", "RUF", "UP"]
 python_version = "3.11"
 strict = true
 files = ["src", "tests", "scripts"]
+
+# Constraints are project metadata; uv does not read them from uv.toml.
+[tool.uv]
+constraint-dependencies = [
+  "cryptography>=50.0.0",
+  "urllib3>=2.8.0",
+  "guardrails-ai!=0.10.1",
+  "mistralai!=2.4.6",
+]
