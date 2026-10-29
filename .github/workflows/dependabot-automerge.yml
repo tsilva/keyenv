@@ -5,11 +5,13 @@ on:
     types: [opened, reopened, synchronize]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   enable-auto-merge:
+    permissions:
+      contents: write
+      pull-requests: write
     if: github.event.pull_request.user.login == 'dependabot[bot]' && github.event.sender.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
