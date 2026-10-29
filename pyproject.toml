@@ -86,4 +86,7 @@ constraint-dependencies = [
   "urllib3>=2.8.0",
   "guardrails-ai!=0.10.1",
   "mistralai!=2.4.6",
+  "certifi>=2026.10.19",
+  "filelock>=4.2.1",
+  "msgpack>=1.2.3",
 ]
