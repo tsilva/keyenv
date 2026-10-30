@@ -7,8 +7,9 @@ manifest, operation, and selected secret names and accounts on stderr. Launches
 also show the executable path that will be invoked. Values and command arguments
 are never displayed. Type `allow` to approve that operation once; `authorize`
 requires the exact secret name instead. Any other answer, end of input, or
-interruption cancels before Keychain access. There is no persistent approval
-or automatic bypass option.
+interruption cancels before Keychain access. Ordinary operations have no automatic
+bypass. A dedicated background command can reuse an explicitly created grant as
+described below.
 
 Each subsequent Keychain call announces its action, secret name, account, and
 whether it accesses a project binding, credential, or legacy credential. These
@@ -34,6 +35,30 @@ approval for the remaining names.
 Keychain. It reports `process` or `keychain-unchecked`; a successful check does
 not establish that stored credentials exist or that project bindings are valid.
 Use `doctor --verify` for the previous source/mismatch checks, with approval.
+
+## Background authorization
+
+`keyenv background authorize --profile NAME -- COMMAND [ARGS...]` requires an
+interactive terminal and the exact profile name as confirmation. It verifies
+stored credentials and project bindings before saving a 0600 grant in the 0700
+`~/.config/keyenv/background/` directory. The grant contains only a version and a
+SHA-256 fingerprint of the canonical project, working directory, full manifest, selected accounts,
+exact command, executable bytes, Python reader, and keyenv implementation.
+Arguments enter the fingerprint but are never stored or logged.
+
+`keyenv run --background --profile NAME -- COMMAND [ARGS...]` checks that exact
+grant before reading Keychain. Missing, changed, unsafe, or revoked grants fail
+before any native credential access. `keyenv background check` checks a grant
+without reading Keychain; `keyenv background revoke --profile NAME` deletes it.
+Reauthorization is required after relevant configuration or reader updates.
+Project modules and descendants are not individually hashed or sandboxed.
+
+Background mode disables Keychain UI for its reads, restores the prior setting
+before executing the child, and fails if macOS denies access or the Keychain is
+locked. Initial setup must grant the displayed Python reader permanent macOS
+access to the selected binding and credential items. Keyenv does not change ACLs,
+unlock Keychain, or grant access to other applications. The user can revoke the
+grant without reading Keychain. A running child retains its injected environment.
 
 ## Launch profiles
 

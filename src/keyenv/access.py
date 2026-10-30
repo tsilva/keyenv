@@ -86,6 +86,7 @@ def access_request(
     confirmation: str = "allow",
     actions: frozenset[str] = frozenset({"read"}),
     needs_keychain: bool = True,
+    preapproved: bool = False,
 ) -> Iterator[None]:
     """Show context and gate the first Keychain call, including binding reads."""
     print(f"keyenv [{os.getpid()}]: {operation} request", file=sys.stderr)
@@ -118,7 +119,9 @@ def access_request(
         for name, spec in manifest.secrets.items()
         if environment is None or not environment.get(name)
     )
-    request = _AccessRequest(manifest, operation, confirmation, actions, accounts)
+    request = _AccessRequest(
+        manifest, operation, confirmation, actions, accounts, approved=preapproved
+    )
     if needs_keychain:
         request.approve()
     token = keychain_observer.set(request.before_access)

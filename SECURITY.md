@@ -25,13 +25,24 @@ project's contents at the same canonical path retains that path's authorization.
 Manifest files may not be symbolic links, and `keyenv run` must start within the
 authorized project root.
 
-CLI operations require a visible terminal summary and one explicit approval
+Ordinary CLI operations require a visible terminal summary and one explicit approval
 before any Keychain call, including project-binding reads. Approval applies only
 to the selected accounts and operation's read/write/delete actions and ends with
 that operation. Denial, EOF, interruption, or a noninteractive terminal prevents
 access. Supplying all selected values through the process environment permits
 background launches without Keychain access. The Python APIs themselves are not
 a separate security boundary against arbitrary same-user code.
+
+An explicitly authorized background launch is the narrow exception to terminal
+approval. Its owner-only grant binds the project, working directory, full manifest, selected account
+definitions, command arguments, executable bytes, Python reader, and keyenv code.
+Only `run --background --profile NAME` can reuse it; other operations still need
+interactive approval. Grants store only a version and hash, never credential values
+or argument text. Missing, changed, unsafe, or revoked grants fail before Keychain
+reads. Background reads disable macOS UI and fail on locked or denied Keychain
+access; keyenv does not change ACLs or unlock it. Grants are not a sandbox against
+same-user code, project module changes, or descendants. Revoking a grant does not
+erase an existing child's environment.
 
 The summary and per-call messages contain metadata only, are written to stderr,
 and are flushed before native access. They cannot authenticate other macOS

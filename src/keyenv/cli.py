@@ -4,12 +4,14 @@ import argparse
 import os
 import shutil
 import sys
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
 
 from . import __version__
 from .access import access_request
+from .background import require_grant, revoke_grant, save_grant, without_keychain_ui
 from .core import (
     KeyenvError,
     Manifest,
@@ -76,9 +78,26 @@ def _parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--manifest", type=Path)
     run.add_argument(
+        "--background",
+        action="store_true",
+        help="use a previously authorized exact background command; never prompt",
+    )
+    run.add_argument(
         "--profile", help="launch with one manifest secret/executable profile"
     )
     run.add_argument("child_command", nargs=argparse.REMAINDER)
+    background = subparsers.add_parser(
+        "background", help="authorize or revoke an exact unattended launch"
+    )
+    background_commands = background.add_subparsers(
+        dest="background_action", required=True
+    )
+    for action in ("authorize", "check", "revoke"):
+        command = background_commands.add_parser(action)
+        command.add_argument("--manifest", type=Path)
+        command.add_argument("--profile", required=True)
+        if action != "revoke":
+            command.add_argument("child_command", nargs=argparse.REMAINDER)
     return parser
 
 
@@ -177,8 +196,9 @@ def _migrate(args: argparse.Namespace) -> int:
     return 0 if healthy else 1
 
 
-def _run(args: argparse.Namespace) -> NoReturn:
-    require_native_keychain()
+def _launch_arguments(
+    args: argparse.Namespace,
+) -> tuple[Manifest, Manifest, list[str], str]:
     manifest = _load(args.manifest)
     if not Path.cwd().resolve().is_relative_to(manifest.root):
         raise KeyenvError("keyenv run must be started inside the manifest project root")
@@ -195,6 +215,42 @@ def _run(args: argparse.Namespace) -> NoReturn:
         expected = _resolve_executable(manifest.profiles[args.profile].executable)
         if executable != expected:
             raise KeyenvError("command does not match the selected profile executable")
+    return manifest, selected, child_command, executable
+
+
+def _background(args: argparse.Namespace) -> int:
+    if args.background_action == "revoke":
+        revoke_grant(_load(args.manifest), args.profile)
+        print(f"revoked\t{args.profile}")
+        return 0
+    require_native_keychain()
+    manifest, selected, child_command, executable = _launch_arguments(args)
+    if args.background_action == "check":
+        require_grant(manifest, args.profile, executable, child_command)
+        print(f"authorized\t{args.profile}")
+        return 0
+    with access_request(
+        selected,
+        "authorize persistent background launch",
+        executable=executable,
+        profile=args.profile,
+        confirmation=args.profile,
+    ):
+        # Verify stored credentials and project bindings even if the caller's
+        # environment already contains values. Nothing secret enters the grant.
+        resolve_environment(selected, environment={})
+    path = save_grant(manifest, args.profile, executable, child_command)
+    print(f"authorized\t{args.profile}\t{path}")
+    return 0
+
+
+def _run(args: argparse.Namespace) -> NoReturn:
+    require_native_keychain()
+    manifest, selected, child_command, executable = _launch_arguments(args)
+    if args.background:
+        if args.profile is None:
+            raise KeyenvError("background launches require --profile NAME")
+        require_grant(manifest, args.profile, executable, child_command)
     # Drop other declared secrets even when inherited from a parent process.
     inherited = {
         name: value
@@ -208,8 +264,10 @@ def _run(args: argparse.Namespace) -> NoReturn:
         profile=args.profile,
         environment=inherited,
         needs_keychain=any(not inherited.get(name) for name in selected.secrets),
+        preapproved=bool(args.background),
     ):
-        environment, _ = resolve_environment(selected, environment=inherited)
+        with without_keychain_ui() if args.background else nullcontext():
+            environment, _ = resolve_environment(selected, environment=inherited)
     try:
         # Execute the displayed path, so injected PATH cannot change the recipient.
         os.execve(executable, child_command, environment)
@@ -248,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
             return _migrate(args)
         if args.command_name == "run":
             _run(args)
+        if args.command_name == "background":
+            return _background(args)
         raise KeyenvError(f"unknown command: {_safe_text(str(args.command_name))}")
     except KeyenvError as exc:
         print(f"keyenv: {exc}", file=sys.stderr)

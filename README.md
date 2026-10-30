@@ -17,6 +17,8 @@
 credentials out of plaintext dotenv files. Store secrets in the login Keychain,
 then use `keyenv run` to inject them into a command's environment. Before Keychain
 access, it shows the project, operation, and secret names and asks for approval.
+An explicitly authorized background profile can reuse a grant for one exact
+command without prompting on each restart.
 
 ## Install
 
@@ -116,6 +118,29 @@ For scan rules, provider injection, migration, and exit codes, see the
 For tests, dependency auditing, and package checks, see
 [development](https://github.com/tsilva/keyenv/blob/main/docs/development.md).
 
+## Unattended services
+
+Declare a launch profile with the service's absolute executable and required
+secret names. Approve its exact command once in an interactive terminal:
+
+```bash
+keyenv background authorize --profile listener -- /absolute/python main.py listener run
+keyenv background check --profile listener -- /absolute/python main.py listener run
+keyenv run --background --profile listener -- /absolute/python main.py listener run
+keyenv background revoke --profile listener
+```
+
+Authorization requires typing the profile name and verifies its stored credentials
+and project bindings. The owner-only grant contains a hash, never credentials or
+command arguments. Changes to the manifest, command, executable, Python reader,
+or keyenv implementation require new authorization. Revocation prevents future
+launches; it does not stop an already running child. Ordinary runs still prompt.
+
+macOS Keychain permissions are separate. During initial setup, allow the displayed
+Python reader permanent access to the selected binding and credential items.
+Background mode disables Keychain dialogs and fails promptly if access is denied
+or the Keychain is locked; it never unlocks the Keychain or changes its ACLs.
+
 ## Architecture
 
 ![keyenv storage and launch flow](https://raw.githubusercontent.com/tsilva/keyenv/main/architecture.png)
@@ -125,3 +150,5 @@ For tests, dependency auditing, and package checks, see
 [MIT](https://github.com/tsilva/keyenv/blob/main/LICENSE)
 
 Dependency patch auto-merge requires Dependabot as both the PR author and event sender. Maintainer-prepared updates are validated and merged manually.
+
+[MIT License](LICENSE).
