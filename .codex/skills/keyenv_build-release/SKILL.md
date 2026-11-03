@@ -5,9 +5,9 @@ description: Build, install locally, publish, monitor, or verify keyenv-macos re
 
 # Build Release
 
-Read and apply the shared `$release-workflow` skill at
-`${CODEX_HOME:-$HOME/.codex}/skills/release-workflow/SKILL.md` before execution.
-It owns common preflight, publication safeguards, `$push` integration,
+Read and apply the shared `$private-skills_release-workflow` skill at
+`${CODEX_HOME:-$HOME/.codex}/skills/private-skills/private-skills_release-workflow/SKILL.md` before execution.
+It owns common preflight, publication safeguards, `$private-skills_push` integration,
 workflow monitoring, verification, and reporting. The rules below are this
 project's adapter; they retain its invocation default and required gates.
 If the shared skill is unavailable, stop and report the missing dependency.
@@ -33,7 +33,7 @@ authoritative.
   [references/local-install.md](references/local-install.md). Local installation
   does not authorize publication.
 - **Cut/publish a release:** prepare a version, commit the release metadata,
-  push the branch and tag using `$push`, then monitor and verify publication.
+  push the branch and tag using `$private-skills_push`, then monitor and verify publication.
 - **Monitor/verify an existing release:** inspect the exact tag, workflow run,
   PyPI version, and GitHub Release without creating a new version or tag.
 
@@ -113,7 +113,7 @@ release commit may be ahead. Resolve any new remote commits before tagging.
 
 Create an annotated `v<version>` tag on the metadata-checked release commit.
 The tag workflow validates and builds it before publication. Follow
-the shared `$push` procedure, using explicit branch and exact-tag refspecs to
+the shared `$private-skills_push` procedure, using explicit branch and exact-tag refspecs to
 the same actual destination with `git push --atomic`. The tag publishes
 automatically through the checked-in workflow. Do not provision credentials,
 change Actions, or attempt recovery publication without an explicit request.
